@@ -236,6 +236,11 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
 
+        if ("noop".equals(data)) {
+            answer(cb);
+            return;
+        }
+
         if (data.startsWith("find:")) {
             handleFindCallback(cb, user);
             return;
@@ -319,16 +324,14 @@ public class BotService extends TelegramLongPollingBot {
                 sendText(message.getChatId(), "Введите секретный код доступа.");
             }
         } else {
-            sendWelcome(message.getChatId());
-            sendMainMenu(message.getChatId(), user);
+            sendMainMenu(message.getChatId(), user, welcomeText());
         }
     }
 
     private void handleSecret(User user, String code, long chatId) throws Exception {
         if (config.secretCode.equals(code)) {
             db.updateUserState(user.tgId(), UserState.NONE, null);
-            sendWelcome(chatId);
-            sendMainMenu(chatId, user);
+            sendMainMenu(chatId, user, welcomeText());
         } else {
             sendText(chatId, "Неверный код. Попробуйте ещё раз.");
         }
@@ -660,7 +663,6 @@ public class BotService extends TelegramLongPollingBot {
                 case "week" -> db.setSetting("price_week", value);
                 case "month" -> db.setSetting("price_month", value);
                 case "single" -> db.setSetting("price_single", value);
-                case "single_days" -> db.setSetting("single_access_days", value);
             }
         }
         db.clearUserState(user.tgId());
@@ -895,6 +897,20 @@ public class BotService extends TelegramLongPollingBot {
                 db.updateUserState(user.tgId(), UserState.WAIT_ADMIN_ADD_ADMIN, null);
                 sendText(chatId, "Введите Telegram ID нового админа.");
             }
+            case "closed" -> {
+                int offset = Integer.parseInt(parts[2]);
+                sendClosedMenList(chatId, offset, cb.getMessage().getMessageId());
+            }
+            case "close" -> {
+                int manId = Integer.parseInt(parts[2]);
+                db.closeMan(manId);
+                sendText(chatId, "Карточка закрыта.");
+            }
+            case "restore" -> {
+                int manId = Integer.parseInt(parts[2]);
+                db.restoreMan(manId);
+                sendText(chatId, "Карточка восстановлена.");
+            }
             case "review_approve" -> {
                 int reviewId = Integer.parseInt(parts[2]);
                 approveReview(reviewId, user);
@@ -914,6 +930,10 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void sendMainMenu(long chatId, User user) throws Exception {
+        sendMainMenu(chatId, user, "Главное меню:");
+    }
+
+    private void sendMainMenu(long chatId, User user, String text) throws Exception {
         boolean premium = isPremium(user) || user.isAdmin();
         String findLabel = premium ? "🔍 Найти мужчину" : "🔒 🔍 Найти мужчину";
         String reviewLabel = premium ? "📝 Оставить отзыв" : "🔒 📝 Оставить отзыв";
@@ -926,16 +946,14 @@ public class BotService extends TelegramLongPollingBot {
         if (user.isAdmin()) {
             rows.add(List.of(btn("⚙️ Админ-панель", "menu:admin")));
         }
-        SendMessage sm = new SendMessage(String.valueOf(chatId), "Главное меню:");
+        SendMessage sm = new SendMessage(String.valueOf(chatId), text);
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
         execute(sm);
     }
-
-    private void sendWelcome(long chatId) throws Exception {
-        String text = "Добро пожаловать! Здесь ты можешь оставить отзыв о мужчине, " +
+    private String welcomeText() {
+        return "Добро пожаловать! Здесь ты можешь оставить отзыв о мужчине, " +
                 "посмотреть отзывы других участниц и безопасно выбрать премиум-доступ. " +
                 "Мы сохраняем отзывы и помогаем сделать информированный выбор.";
-        sendText(chatId, text);
     }
 
     private void sendFindMethod(long chatId, String flow) throws Exception {
@@ -964,6 +982,10 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void sendManCard(long chatId, User user, Man man, boolean includeReviews) throws Exception {
+        if (man.isClosed() && !user.isAdmin()) {
+            sendText(chatId, "Карточка недоступна.");
+            return;
+        }
         boolean access = hasAccess(user, man);
         if (!access) {
             sendPaywall(chatId, man);
@@ -974,28 +996,31 @@ public class BotService extends TelegramLongPollingBot {
         int count = db.reviewCount(man.id());
         StringBuilder sb = new StringBuilder();
         sb.append("Имя: ").append(man.name()).append("\n");
+        if (man.isClosed()) sb.append("Статус: закрыта\n");
         if (man.phone() != null) sb.append("Телефон: ").append(man.phone()).append("\n");
         if (man.tgUsername() != null) sb.append("Telegram: @").append(man.tgUsername()).append("\n");
         if (man.tgId() != null) sb.append("Telegram ID: ").append(man.tgId()).append("\n");
         sb.append("Средний рейтинг: ").append(String.format(Locale.forLanguageTag("ru"), "%.2f", avg))
                 .append(" (отзывов: ").append(count).append(")\n");
 
-        if (includeReviews) {
-            List<Review> reviews = db.listReviewsForMan(man.id(), 5, 0);
-            if (reviews.isEmpty()) {
-                sb.append("\nОтзывов пока нет.");
-            } else {
-                sb.append("\nПоследние отзывы:\n");
-                for (Review r : reviews) {
-                    sb.append(formatReview(r)).append("\n\n");
-                }
-            }
+        List<Review> reviews = db.listReviewsForMan(man.id(), 1, 0);
+        if (reviews.isEmpty()) {
+            sb.append("\nОтзывов пока нет.");
+        } else {
+            sb.append("\nПоследний отзыв:\n");
+            sb.append(formatReview(reviews.get(0)));
         }
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + man.id())));
         rows.add(List.of(btn("📄 Посмотреть отзывы", "reviews:" + man.id() + ":0")));
-        rows.add(List.of(btn("🔒 Закрыть", "menu:find")));
+        if (user.isAdmin()) {
+            if (man.isClosed()) {
+                rows.add(List.of(btn("♻️ Восстановить", "admin:restore:" + man.id())));
+            } else {
+                rows.add(List.of(btn("🔒 Закрыть", "admin:close:" + man.id())));
+            }
+        }
 
         if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
             SendPhoto sp = new SendPhoto();
@@ -1018,7 +1043,7 @@ public class BotService extends TelegramLongPollingBot {
         String text = "Доступ к отзывам платный.\n" +
                 "• Премиум на неделю — " + week + "р\n" +
                 "• Премиум на месяц — " + month + "р\n" +
-                "• Разовый доступ — " + single + "р";
+                "• Разовый доступ к одной карточке — " + single + "р (бессрочно)";
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(btn("💎 Премиум на неделю", "pay:week")));
         rows.add(List.of(btn("💎 Премиум на месяц", "pay:month")));
@@ -1047,12 +1072,13 @@ public class BotService extends TelegramLongPollingBot {
         Review r = list.get(0);
         String text = "Отзывы о " + man.name() + "\n\n" + formatReview(r);
 
+        int total = db.reviewCount(manId);
         boolean hasPrev = offset > 0;
-        boolean hasNext = !db.listReviewsForMan(manId, 1, offset + 1).isEmpty();
+        boolean hasNext = offset + 1 < total;
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        List<InlineKeyboardButton> nav = new ArrayList<>();
-        if (hasPrev) nav.add(btn("⬅️", "reviews:" + manId + ":" + (offset - 1)));
-        if (hasNext) nav.add(btn("➡️", "reviews:" + manId + ":" + (offset + 1)));
+        String prev = hasPrev ? ("reviews:" + manId + ":" + (offset - 1)) : null;
+        String next = hasNext ? ("reviews:" + manId + ":" + (offset + 1)) : null;
+        List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + manId)));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
@@ -1092,12 +1118,13 @@ public class BotService extends TelegramLongPollingBot {
         String manName = man != null ? man.name() : "(удалён)";
         String text = "Ваш отзыв о " + manName + "\n\n" + formatReviewWithStatus(r);
 
+        int total = db.countReviewsByAuthor(user.id());
         boolean hasPrev = offset > 0;
-        boolean hasNext = !db.listReviewsByAuthor(user.id(), 1, offset + 1).isEmpty();
+        boolean hasNext = offset + 1 < total;
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        List<InlineKeyboardButton> nav = new ArrayList<>();
-        if (hasPrev) nav.add(btn("⬅️", "myreviews:" + (offset - 1)));
-        if (hasNext) nav.add(btn("➡️", "myreviews:" + (offset + 1)));
+        String prev = hasPrev ? ("myreviews:" + (offset - 1)) : null;
+        String next = hasNext ? ("myreviews:" + (offset + 1)) : null;
+        List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
         rows.add(List.of(
                 btn("✏️ Изменить", "myreviews:" + offset + ":edit-" + r.id()),
@@ -1145,6 +1172,7 @@ public class BotService extends TelegramLongPollingBot {
         rows.add(List.of(btn("📊 Статистика", "admin:stats")));
         rows.add(List.of(btn("💰 Цены", "admin:prices")));
         rows.add(List.of(btn("➕ Добавить мужчину", "admin:addman")));
+        rows.add(List.of(btn("📁 Закрытые карточки", "admin:closed:0")));
         rows.add(List.of(btn("➕ Добавить админа", "admin:addadmin")));
         SendMessage sm = new SendMessage(String.valueOf(chatId), "Админ-панель:");
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
@@ -1155,17 +1183,14 @@ public class BotService extends TelegramLongPollingBot {
         int w = db.getSettingInt("price_week");
         int m = db.getSettingInt("price_month");
         int s = db.getSettingInt("price_single");
-        int d = db.getSettingInt("single_access_days");
         String text = "Текущие значения:\n" +
                 "• Неделя: " + w + "р\n" +
                 "• Месяц: " + m + "р\n" +
-                "• Разовый доступ: " + s + "р\n" +
-                "• Разовый доступ (дней): " + d;
+                "• Разовый доступ: " + s + "р";
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(btn("Изменить неделю", "admin:price:price_week")));
         rows.add(List.of(btn("Изменить месяц", "admin:price:price_month")));
         rows.add(List.of(btn("Изменить разовый доступ", "admin:price:price_single")));
-        rows.add(List.of(btn("Изменить срок разового доступа", "admin:price:single_access_days")));
         rows.add(List.of(btn("⬅️ Назад", "menu:admin")));
         SendMessage sm = new SendMessage(String.valueOf(chatId), text);
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
@@ -1187,9 +1212,9 @@ public class BotService extends TelegramLongPollingBot {
         boolean hasPrev = offset > 0;
         boolean hasNext = offset + 5 < total;
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        List<InlineKeyboardButton> nav = new ArrayList<>();
-        if (hasPrev) nav.add(btn("⬅️", "admin:users:" + Math.max(0, offset - 5)));
-        if (hasNext) nav.add(btn("➡️", "admin:users:" + (offset + 5)));
+        String prev = hasPrev ? ("admin:users:" + Math.max(0, offset - 5)) : null;
+        String next = hasNext ? ("admin:users:" + (offset + 5)) : null;
+        List<InlineKeyboardButton> nav = buildPageNavRow(offset, 5, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
         rows.add(List.of(btn("⬅️ Назад", "menu:admin")));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
@@ -1274,14 +1299,15 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         Man man = list.get(0);
+        int total = db.countMenByName(name);
         boolean hasPrev = offset > 0;
-        boolean hasNext = db.countMenByName(name) > offset + 1;
+        boolean hasNext = offset + 1 < total;
 
         String text = "Найден мужчина: " + man.name();
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        List<InlineKeyboardButton> nav = new ArrayList<>();
-        if (hasPrev) nav.add(btn("⬅️", "search:" + (offset - 1)));
-        if (hasNext) nav.add(btn("➡️", "search:" + (offset + 1)));
+        String prev = hasPrev ? ("search:" + (offset - 1)) : null;
+        String next = hasNext ? ("search:" + (offset + 1)) : null;
+        List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
         rows.add(List.of(btn("Открыть карточку", "open:" + man.id())));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
@@ -1322,9 +1348,9 @@ public class BotService extends TelegramLongPollingBot {
                 .append(" (отзывов: ").append(count).append(")");
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        List<InlineKeyboardButton> nav = new ArrayList<>();
-        if (hasPrev) nav.add(btn("⬅️", "menlist:" + flow + ":" + (offset - 1)));
-        if (hasNext) nav.add(btn("➡️", "menlist:" + flow + ":" + (offset + 1)));
+        String prev = hasPrev ? ("menlist:" + flow + ":" + (offset - 1)) : null;
+        String next = hasNext ? ("menlist:" + flow + ":" + (offset + 1)) : null;
+        List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
         rows.add(List.of(btn("Открыть карточку", "open:" + man.id())));
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + man.id())));
@@ -1364,6 +1390,78 @@ public class BotService extends TelegramLongPollingBot {
                     sm.setReplyMarkup(markup);
                     execute(sm);
                 }
+            }
+        } else {
+            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
+                SendPhoto sp = new SendPhoto();
+                sp.setChatId(String.valueOf(chatId));
+                sp.setPhoto(new InputFile(man.photoFileId()));
+                sp.setCaption(text);
+                sp.setReplyMarkup(markup);
+                execute(sp);
+            } else {
+                SendMessage sm = new SendMessage(String.valueOf(chatId), text);
+                sm.setReplyMarkup(markup);
+                execute(sm);
+            }
+        }
+    }
+
+    private void sendClosedMenList(long chatId, int offset, Integer messageId) throws Exception {
+        List<Man> list = db.listClosedMen(1, offset);
+        if (list.isEmpty()) {
+            sendText(chatId, "Закрытых карточек нет.");
+            return;
+        }
+        Man man = list.get(0);
+        int total = db.countClosedMen();
+        boolean hasPrev = offset > 0;
+        boolean hasNext = offset + 1 < total;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Закрытая карточка:\n");
+        sb.append(man.name()).append("\n");
+        if (man.description() != null && !man.description().isBlank()) {
+            sb.append(man.description()).append("\n");
+        }
+
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        String prev = hasPrev ? ("admin:closed:" + (offset - 1)) : null;
+        String next = hasNext ? ("admin:closed:" + (offset + 1)) : null;
+        List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
+        if (!nav.isEmpty()) rows.add(nav);
+        rows.add(List.of(btn("Открыть карточку", "open:" + man.id())));
+        rows.add(List.of(btn("♻️ Восстановить", "admin:restore:" + man.id())));
+        rows.add(List.of(btn("⬅️ Назад", "menu:admin")));
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
+
+        String text = sb.toString();
+        if (messageId != null) {
+            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
+                try {
+                    InputMediaPhoto media = new InputMediaPhoto(man.photoFileId());
+                    media.setCaption(text);
+                    EditMessageMedia emm = new EditMessageMedia();
+                    emm.setChatId(String.valueOf(chatId));
+                    emm.setMessageId(messageId);
+                    emm.setMedia(media);
+                    emm.setReplyMarkup(markup);
+                    execute(emm);
+                } catch (Exception ex) {
+                    EditMessageText em = new EditMessageText();
+                    em.setChatId(String.valueOf(chatId));
+                    em.setMessageId(messageId);
+                    em.setText(text);
+                    em.setReplyMarkup(markup);
+                    execute(em);
+                }
+            } else {
+                EditMessageText em = new EditMessageText();
+                em.setChatId(String.valueOf(chatId));
+                em.setMessageId(messageId);
+                em.setText(text);
+                em.setReplyMarkup(markup);
+                execute(em);
             }
         } else {
             if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
@@ -1478,9 +1576,7 @@ public class BotService extends TelegramLongPollingBot {
             db.setPremiumUntil(user.id(), until);
             sendText(user.tgId(), "Оплата получена. Премиум до " + formatDate(until) + ".");
         } else if (payment.type().equals("SINGLE") && payment.manId() != null) {
-            int days = db.getSettingInt("single_access_days");
-            Instant expires = days > 0 ? now.plusSeconds(days * 86400L) : null;
-            db.grantAccess(user.id(), payment.manId(), expires);
+            db.grantAccess(user.id(), payment.manId(), null);
             sendText(user.tgId(), "Оплата получена. Доступ открыт.");
         }
     }
@@ -1527,6 +1623,28 @@ public class BotService extends TelegramLongPollingBot {
     private void sendText(long chatId, String text) throws Exception {
         SendMessage sm = new SendMessage(String.valueOf(chatId), text);
         execute(sm);
+    }
+
+    private List<InlineKeyboardButton> buildNavRow(int current, int total, String prevData, String nextData) {
+        List<InlineKeyboardButton> row = new ArrayList<>();
+        if (total <= 0) return row;
+        if (prevData != null) row.add(btn("⬅️", prevData));
+        row.add(btn(current + "/" + total, "noop"));
+        if (nextData != null) row.add(btn("➡️", nextData));
+        return row;
+    }
+
+    private List<InlineKeyboardButton> buildItemNavRow(int offset, int total, String prevData, String nextData) {
+        if (total <= 1 && prevData == null && nextData == null) return new ArrayList<>();
+        int current = Math.min(total, offset + 1);
+        return buildNavRow(current, Math.max(total, 1), prevData, nextData);
+    }
+
+    private List<InlineKeyboardButton> buildPageNavRow(int offset, int pageSize, int total, String prevData, String nextData) {
+        int totalPages = Math.max(1, (int) Math.ceil(total / (double) pageSize));
+        int current = Math.min(totalPages, (offset / pageSize) + 1);
+        if (total <= pageSize && prevData == null && nextData == null) return new ArrayList<>();
+        return buildNavRow(current, totalPages, prevData, nextData);
     }
 
     private void sendTextWithMenuButton(long chatId, String text) throws Exception {

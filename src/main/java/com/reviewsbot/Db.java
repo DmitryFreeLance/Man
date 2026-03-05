@@ -17,7 +17,7 @@ public class Db {
                        Instant premiumUntil, UserState state, String statePayload) {}
 
     public record Man(int id, String phone, String tgUsername, String tgId, String name,
-                      String description, String photoFileId, Integer createdBy, Instant createdAt) {}
+                      String description, String photoFileId, boolean isClosed, Integer createdBy, Instant createdAt) {}
 
     public record Review(int id, int manId, int authorId, int rating, String text,
                          String status, Instant createdAt, Instant updatedAt) {}
@@ -38,6 +38,7 @@ public class Db {
         }
         initSchema();
         ensureReviewStatusColumn();
+        ensureMenClosedColumn();
         ensureDefaultSettings();
     }
 
@@ -65,7 +66,6 @@ public class Db {
         ensureSetting("price_week", String.valueOf(config.defaultPriceWeek));
         ensureSetting("price_month", String.valueOf(config.defaultPriceMonth));
         ensureSetting("price_single", String.valueOf(config.defaultPriceSingle));
-        ensureSetting("single_access_days", String.valueOf(config.defaultSingleAccessDays));
     }
 
     private void ensureReviewStatusColumn() throws SQLException {
@@ -83,6 +83,25 @@ public class Db {
         if (!hasStatus) {
             try (Statement st = conn.createStatement()) {
                 st.execute("ALTER TABLE reviews ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'");
+            }
+        }
+    }
+
+    private void ensureMenClosedColumn() throws SQLException {
+        boolean hasColumn = false;
+        try (PreparedStatement ps = conn.prepareStatement("PRAGMA table_info(men)")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    if ("is_closed".equalsIgnoreCase(rs.getString("name"))) {
+                        hasColumn = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!hasColumn) {
+            try (Statement st = conn.createStatement()) {
+                st.execute("ALTER TABLE men ADD COLUMN is_closed INTEGER NOT NULL DEFAULT 0");
             }
         }
     }
@@ -213,7 +232,7 @@ public class Db {
     public synchronized Man findManByPhone(String phone) throws SQLException {
         if (phone == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men WHERE phone=?")) {
+                "SELECT * FROM men WHERE phone=? AND is_closed=0")) {
             ps.setString(1, phone);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapMan(rs);
@@ -225,7 +244,7 @@ public class Db {
     public synchronized Man findManByTgUsername(String username) throws SQLException {
         if (username == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men WHERE tg_username=?")) {
+                "SELECT * FROM men WHERE tg_username=? AND is_closed=0")) {
             ps.setString(1, username);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapMan(rs);
@@ -237,7 +256,7 @@ public class Db {
     public synchronized Man findManByTgId(String tgId) throws SQLException {
         if (tgId == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men WHERE tg_id=?")) {
+                "SELECT * FROM men WHERE tg_id=? AND is_closed=0")) {
             ps.setString(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapMan(rs);
@@ -260,19 +279,20 @@ public class Db {
     public synchronized Man createMan(String phone, String tgUsername, String tgId,
                                       String name, String description, String photoFileId, Integer createdBy) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "INSERT INTO men(phone,tg_username,tg_id,name,description,photo_file_id,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)")) {
+                "INSERT INTO men(phone,tg_username,tg_id,name,description,photo_file_id,is_closed,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)")) {
             ps.setString(1, phone);
             ps.setString(2, tgUsername);
             ps.setString(3, tgId);
             ps.setString(4, name);
             ps.setString(5, description);
             ps.setString(6, photoFileId);
+            ps.setInt(7, 0);
             if (createdBy == null) {
-                ps.setNull(7, Types.INTEGER);
+                ps.setNull(8, Types.INTEGER);
             } else {
-                ps.setInt(7, createdBy);
+                ps.setInt(8, createdBy);
             }
-            ps.setString(8, TimeUtil.nowIso());
+            ps.setString(9, TimeUtil.nowIso());
             ps.executeUpdate();
         } catch (SQLException ex) {
             Man m = null;
@@ -294,7 +314,7 @@ public class Db {
     public synchronized List<Man> searchMenByName(String name, int limit, int offset) throws SQLException {
         List<Man> list = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men WHERE lower(name) LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?")) {
+                "SELECT * FROM men WHERE is_closed=0 AND lower(name) LIKE ? ORDER BY id DESC LIMIT ? OFFSET ?")) {
             ps.setString(1, "%" + name.toLowerCase() + "%");
             ps.setInt(2, limit);
             ps.setInt(3, offset);
@@ -308,7 +328,7 @@ public class Db {
     public synchronized List<Man> listMen(int limit, int offset) throws SQLException {
         List<Man> list = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men ORDER BY id DESC LIMIT ? OFFSET ?")) {
+                "SELECT * FROM men WHERE is_closed=0 ORDER BY id DESC LIMIT ? OFFSET ?")) {
             ps.setInt(1, limit);
             ps.setInt(2, offset);
             try (ResultSet rs = ps.executeQuery()) {
@@ -319,7 +339,7 @@ public class Db {
     }
 
     public synchronized int countMen() throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM men")) {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM men WHERE is_closed=0")) {
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return rs.getInt(1);
             }
@@ -327,9 +347,47 @@ public class Db {
         return 0;
     }
 
+    public synchronized List<Man> listClosedMen(int limit, int offset) throws SQLException {
+        List<Man> list = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM men WHERE is_closed=1 ORDER BY id DESC LIMIT ? OFFSET ?")) {
+            ps.setInt(1, limit);
+            ps.setInt(2, offset);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) list.add(mapMan(rs));
+            }
+        }
+        return list;
+    }
+
+    public synchronized int countClosedMen() throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM men WHERE is_closed=1")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        }
+        return 0;
+    }
+
+    public synchronized void closeMan(int manId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE men SET is_closed=1 WHERE id=?")) {
+            ps.setInt(1, manId);
+            ps.executeUpdate();
+        }
+    }
+
+    public synchronized void restoreMan(int manId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE men SET is_closed=0 WHERE id=?")) {
+            ps.setInt(1, manId);
+            ps.executeUpdate();
+        }
+    }
+
     public synchronized int countMenByName(String name) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT count(*) FROM men WHERE lower(name) LIKE ?")) {
+                "SELECT count(*) FROM men WHERE is_closed=0 AND lower(name) LIKE ?")) {
             ps.setString(1, "%" + name.toLowerCase() + "%");
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return rs.getInt(1);
@@ -386,6 +444,17 @@ public class Db {
             }
         }
         return list;
+    }
+
+    public synchronized int countReviewsByAuthor(int authorId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT COUNT(*) FROM reviews WHERE author_id=?")) {
+            ps.setInt(1, authorId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        }
+        return 0;
     }
 
     public synchronized Review getReviewById(int reviewId) throws SQLException {
@@ -649,6 +718,7 @@ public class Db {
                 rs.getString("name"),
                 rs.getString("description"),
                 rs.getString("photo_file_id"),
+                rs.getInt("is_closed") == 1,
                 (Integer) rs.getObject("created_by"),
                 TimeUtil.parseIso(rs.getString("created_at"))
         );

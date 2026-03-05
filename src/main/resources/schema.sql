@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS men (
     name TEXT NOT NULL,
     description TEXT,
     photo_file_id TEXT,
+    is_closed INTEGER NOT NULL DEFAULT 0,
     created_by INTEGER,
     created_at TEXT NOT NULL,
     UNIQUE(phone),
@@ -72,5 +73,4 @@ CREATE TABLE IF NOT EXISTS settings (
 INSERT OR IGNORE INTO settings(key, value) VALUES
     ('price_week', '200'),
     ('price_month', '500'),
-    ('price_single', '99'),
-    ('single_access_days', '0');
+    ('price_single', '99');

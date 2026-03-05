@@ -21,7 +21,6 @@ public class BotConfig {
     public final int defaultPriceWeek;
     public final int defaultPriceMonth;
     public final int defaultPriceSingle;
-    public final int defaultSingleAccessDays;
 
     public BotConfig() {
         this.botToken = envOrThrow("BOT_TOKEN");
@@ -33,7 +32,6 @@ public class BotConfig {
         this.defaultPriceWeek = Integer.parseInt(envOrDefault("PRICE_WEEK", "200"));
         this.defaultPriceMonth = Integer.parseInt(envOrDefault("PRICE_MONTH", "500"));
         this.defaultPriceSingle = Integer.parseInt(envOrDefault("PRICE_SINGLE", "99"));
-        this.defaultSingleAccessDays = Integer.parseInt(envOrDefault("SINGLE_ACCESS_DAYS", "0"));
 
         this.taxSystemCode = Integer.parseInt(envOrDefault("TAX_SYSTEM_CODE", "1"));
         this.vatCode = Integer.parseInt(envOrDefault("VAT_CODE", "1"));

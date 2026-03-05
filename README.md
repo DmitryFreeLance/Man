@@ -14,7 +14,6 @@ docker run -d --name reviews-bot \
   -e PRICE_WEEK=200 \
   -e PRICE_MONTH=500 \
   -e PRICE_SINGLE=99 \
-  -e SINGLE_ACCESS_DAYS=0 \
   -e TAX_SYSTEM_CODE=1 \
   -e VAT_CODE=1 \
   -e PAYMENT_SUBJECT=service \
@@ -39,7 +38,6 @@ java -jar target/reviews-bot-1.0.0.jar
 - `PROVIDER_TOKEN` — токен платежного провайдера YooKassa для Telegram Payments
 - `DB_PATH` — путь к sqlite (по умолчанию `data/reviewsbot.sqlite`)
 - `PRICE_WEEK`, `PRICE_MONTH`, `PRICE_SINGLE` — цены по умолчанию
-- `SINGLE_ACCESS_DAYS` — срок разового доступа (0 = бессрочно)
 - `TAX_SYSTEM_CODE`, `VAT_CODE`, `PAYMENT_SUBJECT`, `PAYMENT_MODE` — параметры фискализации для чеков
 
 ## Команды
