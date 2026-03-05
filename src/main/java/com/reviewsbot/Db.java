@@ -26,6 +26,7 @@ public class Db {
                           String status, Instant createdAt, Instant updatedAt) {}
 
     public record Stats(int users, int men, int reviews) {}
+    public record ManStats(int id, String name, String phone, String tgUsername, String tgId, int reviewsCount, double avgRating) {}
 
     public Db(BotConfig config) throws Exception {
         this.config = config;
@@ -304,6 +305,28 @@ public class Db {
         return list;
     }
 
+    public synchronized List<Man> listMen(int limit, int offset) throws SQLException {
+        List<Man> list = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM men ORDER BY id DESC LIMIT ? OFFSET ?")) {
+            ps.setInt(1, limit);
+            ps.setInt(2, offset);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) list.add(mapMan(rs));
+            }
+        }
+        return list;
+    }
+
+    public synchronized int countMen() throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT COUNT(*) FROM men")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        }
+        return 0;
+    }
+
     public synchronized int countMenByName(String name) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT count(*) FROM men WHERE lower(name) LIKE ?")) {
@@ -516,6 +539,43 @@ public class Db {
             ps.setInt(2, offset);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) list.add(mapUser(rs));
+            }
+        }
+        return list;
+    }
+
+    public synchronized List<User> listAllUsers() throws SQLException {
+        List<User> list = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT id,tg_id,tg_username,first_name,is_admin,premium_until,state,state_payload FROM users ORDER BY id DESC")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) list.add(mapUser(rs));
+            }
+        }
+        return list;
+    }
+
+    public synchronized List<ManStats> listMenWithStats() throws SQLException {
+        List<ManStats> list = new ArrayList<>();
+        String sql = "SELECT m.id, m.name, m.phone, m.tg_username, m.tg_id, " +
+                "COUNT(r.id) AS reviews_count, AVG(r.rating) AS avg_rating " +
+                "FROM men m " +
+                "LEFT JOIN reviews r ON r.man_id = m.id AND r.status='APPROVED' " +
+                "GROUP BY m.id " +
+                "ORDER BY m.id DESC";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new ManStats(
+                            rs.getInt("id"),
+                            rs.getString("name"),
+                            rs.getString("phone"),
+                            rs.getString("tg_username"),
+                            rs.getString("tg_id"),
+                            rs.getInt("reviews_count"),
+                            rs.getDouble("avg_rating")
+                    ));
+                }
             }
         }
         return list;
