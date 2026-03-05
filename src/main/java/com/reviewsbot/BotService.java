@@ -16,10 +16,10 @@ import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.PhotoSize;
-import org.telegram.telegrambots.meta.api.objects.PreCheckoutQuery;
-import org.telegram.telegrambots.meta.api.objects.SuccessfulPayment;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.payments.LabeledPrice;
+import org.telegram.telegrambots.meta.api.objects.payments.PreCheckoutQuery;
+import org.telegram.telegrambots.meta.api.objects.payments.SuccessfulPayment;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMarkup;
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 
