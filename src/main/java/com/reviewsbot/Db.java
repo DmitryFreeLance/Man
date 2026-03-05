@@ -50,8 +50,13 @@ public class Db {
                 sb.append(line).append('\n');
             }
         }
+        String[] statements = sb.toString().split(";");
         try (Statement st = conn.createStatement()) {
-            st.execute(sb.toString());
+            for (String stmt : statements) {
+                String sql = stmt.trim();
+                if (sql.isEmpty()) continue;
+                st.execute(sql);
+            }
         }
     }
 
