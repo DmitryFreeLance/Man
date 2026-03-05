@@ -1309,7 +1309,7 @@ public class BotService extends TelegramLongPollingBot {
         String next = hasNext ? ("search:" + (offset + 1)) : null;
         List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
-        rows.add(List.of(btn("Открыть карточку", "open:" + man.id())));
+        rows.add(List.of(btn("Посмотреть отзывы", "open:" + man.id())));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
         if (messageId != null) {
@@ -1352,7 +1352,7 @@ public class BotService extends TelegramLongPollingBot {
         String next = hasNext ? ("menlist:" + flow + ":" + (offset + 1)) : null;
         List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
-        rows.add(List.of(btn("Открыть карточку", "open:" + man.id())));
+        rows.add(List.of(btn("Посмотреть отзывы", "open:" + man.id())));
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + man.id())));
         rows.add(List.of(btn("⬅️ Назад", "menu:" + ("review".equals(flow) ? "review" : "find"))));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
@@ -1430,7 +1430,7 @@ public class BotService extends TelegramLongPollingBot {
         String next = hasNext ? ("admin:closed:" + (offset + 1)) : null;
         List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
-        rows.add(List.of(btn("Открыть карточку", "open:" + man.id())));
+        rows.add(List.of(btn("Посмотреть отзывы", "open:" + man.id())));
         rows.add(List.of(btn("♻️ Восстановить", "admin:restore:" + man.id())));
         rows.add(List.of(btn("⬅️ Назад", "menu:admin")));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
