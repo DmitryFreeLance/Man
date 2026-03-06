@@ -286,18 +286,6 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
 
-        if (data.startsWith("open:")) {
-            int manId = Integer.parseInt(data.split(":")[1]);
-            Man man = db.getManById(manId);
-            if (man != null) {
-                sendManCard(cb.getMessage().getChatId(), user, man, true);
-            } else {
-                sendText(cb.getMessage().getChatId(), "Карточка не найдена.");
-            }
-            answer(cb);
-            return;
-        }
-
         if (data.startsWith("myreviews:")) {
             handleMyReviewsPagination(cb, user);
             return;
@@ -992,24 +980,7 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
 
-        double avg = db.averageRating(man.id());
-        int count = db.reviewCount(man.id());
-        StringBuilder sb = new StringBuilder();
-        sb.append("Имя: ").append(man.name()).append("\n");
-        if (man.isClosed()) sb.append("Статус: закрыта\n");
-        if (man.phone() != null) sb.append("Телефон: ").append(man.phone()).append("\n");
-        if (man.tgUsername() != null) sb.append("Telegram: @").append(man.tgUsername()).append("\n");
-        if (man.tgId() != null) sb.append("Telegram ID: ").append(man.tgId()).append("\n");
-        sb.append("Средний рейтинг: ").append(String.format(Locale.forLanguageTag("ru"), "%.2f", avg))
-                .append(" (отзывов: ").append(count).append(")\n");
-
-        List<Review> reviews = db.listReviewsForMan(man.id(), 1, 0);
-        if (reviews.isEmpty()) {
-            sb.append("\nОтзывов пока нет.");
-        } else {
-            sb.append("\nПоследний отзыв:\n");
-            sb.append(formatReview(reviews.get(0)));
-        }
+        String textBody = buildManPreviewText(man, man.isClosed());
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + man.id())));
@@ -1026,11 +997,11 @@ public class BotService extends TelegramLongPollingBot {
             SendPhoto sp = new SendPhoto();
             sp.setChatId(String.valueOf(chatId));
             sp.setPhoto(new InputFile(man.photoFileId()));
-            sp.setCaption(sb.toString());
+            sp.setCaption(textBody);
             sp.setReplyMarkup(new InlineKeyboardMarkup(rows));
             execute(sp);
         } else {
-            SendMessage sm = new SendMessage(String.valueOf(chatId), sb.toString());
+            SendMessage sm = new SendMessage(String.valueOf(chatId), textBody);
             sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
             execute(sm);
         }
@@ -1299,17 +1270,21 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         Man man = list.get(0);
+        if (!hasAccess(user, man)) {
+            sendPaywall(chatId, man);
+            return;
+        }
         int total = db.countMenByName(name);
         boolean hasPrev = offset > 0;
         boolean hasNext = offset + 1 < total;
 
-        String text = "Найден мужчина: " + man.name();
+        String text = buildManPreviewText(man, false);
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         String prev = hasPrev ? ("search:" + (offset - 1)) : null;
         String next = hasNext ? ("search:" + (offset + 1)) : null;
         List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
-        rows.add(List.of(btn("Посмотреть отзывы", "open:" + man.id())));
+        rows.add(List.of(btn("Посмотреть отзывы", "reviews:" + man.id() + ":0")));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
         if (messageId != null) {
@@ -1333,31 +1308,26 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         Man man = list.get(0);
+        if (!hasAccess(user, man)) {
+            sendPaywall(chatId, man);
+            return;
+        }
         int total = db.countMen();
         boolean hasPrev = offset > 0;
         boolean hasNext = offset + 1 < total;
 
-        StringBuilder sb = new StringBuilder();
-        sb.append(man.name()).append("\n");
-        if (man.description() != null && !man.description().isBlank()) {
-            sb.append(man.description()).append("\n");
-        }
-        double avg = db.averageRating(man.id());
-        int count = db.reviewCount(man.id());
-        sb.append("Рейтинг: ").append(String.format(Locale.forLanguageTag("ru"), "%.2f", avg))
-                .append(" (отзывов: ").append(count).append(")");
+        String text = buildManPreviewText(man, false);
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         String prev = hasPrev ? ("menlist:" + flow + ":" + (offset - 1)) : null;
         String next = hasNext ? ("menlist:" + flow + ":" + (offset + 1)) : null;
         List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
-        rows.add(List.of(btn("Посмотреть отзывы", "open:" + man.id())));
+        rows.add(List.of(btn("Посмотреть отзывы", "reviews:" + man.id() + ":0")));
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + man.id())));
         rows.add(List.of(btn("⬅️ Назад", "menu:" + ("review".equals(flow) ? "review" : "find"))));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
-        String text = sb.toString();
         if (messageId != null) {
             if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
                 try {
@@ -1418,24 +1388,18 @@ public class BotService extends TelegramLongPollingBot {
         boolean hasPrev = offset > 0;
         boolean hasNext = offset + 1 < total;
 
-        StringBuilder sb = new StringBuilder();
-        sb.append("Закрытая карточка:\n");
-        sb.append(man.name()).append("\n");
-        if (man.description() != null && !man.description().isBlank()) {
-            sb.append(man.description()).append("\n");
-        }
+        String text = buildManPreviewText(man, true);
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         String prev = hasPrev ? ("admin:closed:" + (offset - 1)) : null;
         String next = hasNext ? ("admin:closed:" + (offset + 1)) : null;
         List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
-        rows.add(List.of(btn("Посмотреть отзывы", "open:" + man.id())));
+        rows.add(List.of(btn("Посмотреть отзывы", "reviews:" + man.id() + ":0")));
         rows.add(List.of(btn("♻️ Восстановить", "admin:restore:" + man.id())));
         rows.add(List.of(btn("⬅️ Назад", "menu:admin")));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
-        String text = sb.toString();
         if (messageId != null) {
             if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
                 try {
@@ -1702,6 +1666,29 @@ public class BotService extends TelegramLongPollingBot {
             default -> "На модерации";
         };
         return formatReview(r) + "\nСтатус: " + statusRu;
+    }
+
+    private String buildManPreviewText(Man man, boolean showClosedStatus) throws Exception {
+        double avg = db.averageRating(man.id());
+        int count = db.reviewCount(man.id());
+        StringBuilder sb = new StringBuilder();
+        sb.append("Имя: ").append(man.name()).append("\n");
+        if (showClosedStatus && man.isClosed()) sb.append("Статус: закрыта\n");
+        if (man.phone() != null) sb.append("Телефон: ").append(man.phone()).append("\n");
+        if (man.tgUsername() != null) sb.append("Telegram: @").append(man.tgUsername()).append("\n");
+        if (man.tgId() != null) sb.append("Telegram ID: ").append(man.tgId()).append("\n");
+        sb.append("Средний рейтинг: ")
+                .append(String.format(Locale.forLanguageTag("ru"), "%.2f", avg))
+                .append(" (отзывов: ").append(count).append(")\n");
+
+        List<Review> reviews = db.listReviewsForMan(man.id(), 1, 0);
+        if (reviews.isEmpty()) {
+            sb.append("\nОтзывов пока нет.");
+        } else {
+            sb.append("\nПоследний отзыв:\n");
+            sb.append(formatReview(reviews.get(0)));
+        }
+        return sb.toString();
     }
 
     private String formatDate(Instant instant) {
