@@ -468,6 +468,18 @@ public class Db {
         return null;
     }
 
+    public synchronized Review getReviewByAuthorAndMan(int authorId, int manId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM reviews WHERE author_id=? AND man_id=? ORDER BY id DESC LIMIT 1")) {
+            ps.setInt(1, authorId);
+            ps.setInt(2, manId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return mapReview(rs);
+            }
+        }
+        return null;
+    }
+
     public synchronized Review createReview(int manId, int authorId, int rating, String text) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO reviews(man_id, author_id, rating, text, status, created_at) VALUES(?,?,?,?,?,?)")) {

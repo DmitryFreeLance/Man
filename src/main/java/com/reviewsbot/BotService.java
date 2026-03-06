@@ -281,6 +281,18 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
 
+        if (data.startsWith("back:man:")) {
+            int manId = Integer.parseInt(data.split(":")[2]);
+            Man man = db.getManById(manId);
+            if (man != null) {
+                sendManCard(cb.getMessage().getChatId(), user, man, true);
+            } else {
+                sendText(cb.getMessage().getChatId(), "Карточка не найдена.");
+            }
+            answer(cb);
+            return;
+        }
+
         if (data.startsWith("search:")) {
             handleNameSearchPagination(cb, user);
             return;
@@ -393,13 +405,8 @@ public class BotService extends TelegramLongPollingBot {
             String payload = null;
             payload = Payload.put(payload, "flow", flow);
             payload = Payload.put(payload, "phone", phone);
-            if ("review".equals(flow)) {
-                db.updateUserState(user.tgId(), UserState.WAIT_MAN_PHOTO, payload);
-                sendSkipPrompt(chatId, "Запись не найдена. Создаём карточку. Отправьте фото или нажмите «Пропустить».", "skip:man_photo");
-            } else {
-                db.updateUserState(user.tgId(), UserState.NONE, payload);
-                sendCreatePrompt(chatId);
-            }
+            db.updateUserState(user.tgId(), UserState.NONE, payload);
+            sendCreatePrompt(chatId);
         } else {
             if ("review".equals(flow)) {
                 sendRatingButtons(chatId, man.id(), false);
@@ -418,13 +425,8 @@ public class BotService extends TelegramLongPollingBot {
             payload = Payload.put(payload, "flow", flow);
             if (username != null) payload = Payload.put(payload, "tg_username", username);
             if (tgId != null) payload = Payload.put(payload, "tg_id", tgId);
-            if ("review".equals(flow)) {
-                db.updateUserState(user.tgId(), UserState.WAIT_MAN_PHOTO, payload);
-                sendSkipPrompt(chatId, "Запись не найдена. Создаём карточку. Отправьте фото или нажмите «Пропустить».", "skip:man_photo");
-            } else {
-                db.updateUserState(user.tgId(), UserState.NONE, payload);
-                sendCreatePrompt(chatId);
-            }
+            db.updateUserState(user.tgId(), UserState.NONE, payload);
+            sendCreatePrompt(chatId);
         } else {
             if ("review".equals(flow)) {
                 sendRatingButtons(chatId, man.id(), false);
@@ -505,11 +507,20 @@ public class BotService extends TelegramLongPollingBot {
         Map<String, String> map = Payload.parse(user.statePayload());
         int manId = Integer.parseInt(map.get("man_id"));
         int rating = Integer.parseInt(map.get("rating"));
-        Review review = db.createReview(manId, user.id(), rating, text);
-        db.clearUserState(user.tgId());
-        sendText(chatId, "Отзыв отправлен на модерацию.");
-        if (review != null) {
-            notifyAdminsForReview(review.id());
+        Review existing = db.getReviewByAuthorAndMan(user.id(), manId);
+        if (existing != null) {
+            db.updateReview(existing.id(), rating, text);
+            db.updateReviewStatus(existing.id(), "PENDING");
+            db.clearUserState(user.tgId());
+            sendTextWithMenuButton(chatId, "У вас уже есть отзыв. Мы обновили его и отправили на модерацию.");
+            notifyAdminsForReview(existing.id());
+        } else {
+            Review review = db.createReview(manId, user.id(), rating, text);
+            db.clearUserState(user.tgId());
+            sendText(chatId, "Отзыв отправлен на модерацию.");
+            if (review != null) {
+                notifyAdminsForReview(review.id());
+            }
         }
         Man man = db.getManById(manId);
         if (man != null) {
@@ -1051,6 +1062,7 @@ public class BotService extends TelegramLongPollingBot {
         String next = hasNext ? ("reviews:" + manId + ":" + (offset + 1)) : null;
         List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
         if (!nav.isEmpty()) rows.add(nav);
+        rows.add(List.of(btn("⬅️ Назад", "back:man:" + manId)));
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + manId)));
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
