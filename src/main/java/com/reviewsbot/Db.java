@@ -38,6 +38,8 @@ public class Db {
         }
         initSchema();
         ensureReviewStatusColumn();
+        ensureReviewsApproved();
+        ensureReviewNotifiedColumn();
         ensureMenClosedColumn();
         ensureDefaultSettings();
     }
@@ -82,7 +84,32 @@ public class Db {
         }
         if (!hasStatus) {
             try (Statement st = conn.createStatement()) {
-                st.execute("ALTER TABLE reviews ADD COLUMN status TEXT NOT NULL DEFAULT 'PENDING'");
+                st.execute("ALTER TABLE reviews ADD COLUMN status TEXT NOT NULL DEFAULT 'APPROVED'");
+            }
+        }
+    }
+
+    private void ensureReviewsApproved() throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("UPDATE reviews SET status='APPROVED' WHERE status IS NULL OR status!='APPROVED'");
+        }
+    }
+
+    private void ensureReviewNotifiedColumn() throws SQLException {
+        boolean hasColumn = false;
+        try (PreparedStatement ps = conn.prepareStatement("PRAGMA table_info(reviews)")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    if ("mod_notified".equalsIgnoreCase(rs.getString("name"))) {
+                        hasColumn = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!hasColumn) {
+            try (Statement st = conn.createStatement()) {
+                st.execute("ALTER TABLE reviews ADD COLUMN mod_notified INTEGER NOT NULL DEFAULT 0");
             }
         }
     }
@@ -311,6 +338,15 @@ public class Db {
         return null;
     }
 
+    public synchronized void updateManPhoto(int manId, String photoFileId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE men SET photo_file_id=? WHERE id=?")) {
+            ps.setString(1, photoFileId);
+            ps.setInt(2, manId);
+            ps.executeUpdate();
+        }
+    }
+
     public synchronized List<Man> searchMenByName(String name, int limit, int offset) throws SQLException {
         List<Man> list = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
@@ -398,7 +434,7 @@ public class Db {
 
     public synchronized double averageRating(int manId) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT AVG(rating) FROM reviews WHERE man_id=? AND status='APPROVED'")) {
+                "SELECT AVG(rating) FROM reviews WHERE man_id=?")) {
             ps.setInt(1, manId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return rs.getDouble(1);
@@ -409,7 +445,7 @@ public class Db {
 
     public synchronized int reviewCount(int manId) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT COUNT(*) FROM reviews WHERE man_id=? AND status='APPROVED'")) {
+                "SELECT COUNT(*) FROM reviews WHERE man_id=?")) {
             ps.setInt(1, manId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return rs.getInt(1);
@@ -421,7 +457,7 @@ public class Db {
     public synchronized List<Review> listReviewsForMan(int manId, int limit, int offset) throws SQLException {
         List<Review> list = new ArrayList<>();
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM reviews WHERE man_id=? AND status='APPROVED' ORDER BY id DESC LIMIT ? OFFSET ?")) {
+                "SELECT * FROM reviews WHERE man_id=? ORDER BY id DESC LIMIT ? OFFSET ?")) {
             ps.setInt(1, manId);
             ps.setInt(2, limit);
             ps.setInt(3, offset);
@@ -487,7 +523,7 @@ public class Db {
             ps.setInt(2, authorId);
             ps.setInt(3, rating);
             ps.setString(4, text);
-            ps.setString(5, "PENDING");
+            ps.setString(5, "APPROVED");
             ps.setString(6, TimeUtil.nowIso());
             ps.executeUpdate();
         }
@@ -513,11 +549,30 @@ public class Db {
 
     public synchronized void updateReviewStatus(int reviewId, String status) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
-                "UPDATE reviews SET status=?, updated_at=? WHERE id=?")) {
+                "UPDATE reviews SET status=?, updated_at=?, mod_notified=CASE WHEN ?='PENDING' THEN 0 ELSE mod_notified END WHERE id=?")) {
+            ps.setString(1, status);
+            ps.setString(2, TimeUtil.nowIso());
+            ps.setString(3, status);
+            ps.setInt(4, reviewId);
+            ps.executeUpdate();
+        }
+    }
+
+    public synchronized boolean updateReviewStatusIfPending(int reviewId, String status) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE reviews SET status=?, updated_at=? WHERE id=? AND (status IS NULL OR status='PENDING')")) {
             ps.setString(1, status);
             ps.setString(2, TimeUtil.nowIso());
             ps.setInt(3, reviewId);
-            ps.executeUpdate();
+            return ps.executeUpdate() == 1;
+        }
+    }
+
+    public synchronized boolean markReviewNotifiedIfNeeded(int reviewId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE reviews SET mod_notified=1 WHERE id=? AND mod_notified=0")) {
+            ps.setInt(1, reviewId);
+            return ps.executeUpdate() == 1;
         }
     }
 
@@ -641,7 +696,7 @@ public class Db {
         String sql = "SELECT m.id, m.name, m.phone, m.tg_username, m.tg_id, " +
                 "COUNT(r.id) AS reviews_count, AVG(r.rating) AS avg_rating " +
                 "FROM men m " +
-                "LEFT JOIN reviews r ON r.man_id = m.id AND r.status='APPROVED' " +
+                "LEFT JOIN reviews r ON r.man_id = m.id " +
                 "GROUP BY m.id " +
                 "ORDER BY m.id DESC";
         try (PreparedStatement ps = conn.prepareStatement(sql)) {

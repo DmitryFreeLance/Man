@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS reviews (
     author_id INTEGER NOT NULL,
     rating INTEGER NOT NULL,
     text TEXT,
-    status TEXT NOT NULL DEFAULT 'PENDING',
+    status TEXT NOT NULL DEFAULT 'APPROVED',
     created_at TEXT NOT NULL,
     updated_at TEXT,
     FOREIGN KEY(man_id) REFERENCES men(id) ON DELETE CASCADE,

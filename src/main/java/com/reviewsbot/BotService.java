@@ -38,6 +38,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.io.File;
 import java.io.FileOutputStream;
 
@@ -200,6 +201,11 @@ public class BotService extends TelegramLongPollingBot {
 
         if (user.state() == UserState.WAIT_ADMIN_ADD_CONTACT) {
             handleAdminAddContact(user, message);
+            return;
+        }
+
+        if (user.state() == UserState.WAIT_ADMIN_SET_PHOTO) {
+            handleAdminSetPhoto(user, message);
             return;
         }
 
@@ -446,43 +452,15 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void handleManPhoto(User user, Message message) throws Exception {
-        String payload = user.statePayload();
-        if (message.hasPhoto()) {
-            String fileId = message.getPhoto().stream().max(Comparator.comparing(PhotoSize::getFileSize))
-                    .map(PhotoSize::getFileId).orElse(null);
-            payload = Payload.put(payload, "photo", fileId);
-            db.updateUserState(user.tgId(), UserState.WAIT_MAN_NAME, payload);
-            sendText(message.getChatId(), "Введите имя мужчины.");
-        } else if (message.hasText() && message.getText().equalsIgnoreCase("пропустить")) {
-            payload = Payload.put(payload, "photo", "");
-            db.updateUserState(user.tgId(), UserState.WAIT_MAN_NAME, payload);
-            sendText(message.getChatId(), "Введите имя мужчины.");
-        } else {
-            sendSkipPrompt(message.getChatId(), "Отправьте фото или нажмите «Пропустить».", "skip:man_photo");
-        }
+        startCreateMan(user, message.getChatId());
     }
 
     private void handleManName(User user, Message message) throws Exception {
-        if (!message.hasText() || message.getText().isBlank()) {
-            sendText(message.getChatId(), "Имя не распознано. Попробуйте ещё раз.");
-            return;
-        }
-        String payload = Payload.put(user.statePayload(), "name", message.getText().trim());
-        db.updateUserState(user.tgId(), UserState.WAIT_MAN_DESC, payload);
-        sendSkipPrompt(message.getChatId(), "Добавьте описание или нажмите «Пропустить».", "skip:man_desc");
+        startCreateMan(user, message.getChatId());
     }
 
     private void handleManDesc(User user, Message message) throws Exception {
-        String desc = null;
-        if (message.hasText()) {
-            desc = message.getText().trim();
-            if (desc.equalsIgnoreCase("пропустить")) {
-                desc = null;
-            }
-        }
-        String payload = Payload.put(user.statePayload(), "desc", desc == null ? "" : desc);
-        db.updateUserState(user.tgId(), UserState.NONE, payload);
-        createManFromPayload(user, message.getChatId(), payload);
+        startCreateMan(user, message.getChatId());
     }
 
     private void handleReviewText(User user, Message message) throws Exception {
@@ -509,18 +487,21 @@ public class BotService extends TelegramLongPollingBot {
         int rating = Integer.parseInt(map.get("rating"));
         Review existing = db.getReviewByAuthorAndMan(user.id(), manId);
         if (existing != null) {
-            db.updateReview(existing.id(), rating, text);
-            db.updateReviewStatus(existing.id(), "PENDING");
-            db.clearUserState(user.tgId());
-            sendTextWithMenuButton(chatId, "У вас уже есть отзыв. Мы обновили его и отправили на модерацию.");
-            notifyAdminsForReview(existing.id());
+            String newText = normalizeReviewText(text);
+            String oldText = normalizeReviewText(existing.text());
+            boolean same = existing.rating() == rating && Objects.equals(oldText, newText);
+            if (same) {
+                db.clearUserState(user.tgId());
+                sendTextWithMenuButton(chatId, "У вас уже есть такой отзыв.");
+            } else {
+                db.updateReview(existing.id(), rating, text);
+                db.clearUserState(user.tgId());
+                sendTextWithMenuButton(chatId, "Отзыв обновлён.");
+            }
         } else {
             Review review = db.createReview(manId, user.id(), rating, text);
             db.clearUserState(user.tgId());
-            sendText(chatId, "Отзыв отправлен на модерацию.");
-            if (review != null) {
-                notifyAdminsForReview(review.id());
-            }
+            sendText(chatId, "Отзыв опубликован.");
         }
         Man man = db.getManById(manId);
         if (man != null) {
@@ -536,11 +517,18 @@ public class BotService extends TelegramLongPollingBot {
             Review existing = db.getReviewById(reviewId);
             if (existing != null) text = existing.text();
         }
+        Review existing = db.getReviewById(reviewId);
+        String newText = normalizeReviewText(text);
+        String oldText = existing == null ? null : normalizeReviewText(existing.text());
+        boolean same = existing != null && existing.rating() == rating && Objects.equals(oldText, newText);
+        if (same) {
+            db.clearUserState(user.tgId());
+            sendTextWithMenuButton(chatId, "Отзыв не изменился.");
+            return;
+        }
         db.updateReview(reviewId, rating, text);
-        db.updateReviewStatus(reviewId, "PENDING");
         db.clearUserState(user.tgId());
-        sendTextWithMenuButton(chatId, "Отзыв обновлён и отправлен на модерацию.");
-        notifyAdminsForReview(reviewId);
+        sendTextWithMenuButton(chatId, "Отзыв обновлён.");
     }
 
     private void handleAdminAddPhoto(User user, Message message) throws Exception {
@@ -579,6 +567,25 @@ public class BotService extends TelegramLongPollingBot {
         String payload = Payload.put(user.statePayload(), "desc", desc == null ? "" : desc);
         db.updateUserState(user.tgId(), UserState.WAIT_ADMIN_ADD_CONTACT, payload);
         sendSkipPrompt(message.getChatId(), "Введите телефон или @username (или нажмите «Пропустить»).", "skip:admin_add_contact");
+    }
+
+    private void handleAdminSetPhoto(User user, Message message) throws Exception {
+        String manIdStr = Payload.get(user.statePayload(), "man_id");
+        if (manIdStr == null) {
+            db.clearUserState(user.tgId());
+            sendText(message.getChatId(), "Карточка не выбрана.");
+            return;
+        }
+        if (message.hasPhoto()) {
+            String fileId = message.getPhoto().stream().max(Comparator.comparing(PhotoSize::getFileSize))
+                    .map(PhotoSize::getFileId).orElse(null);
+            int manId = Integer.parseInt(manIdStr);
+            db.updateManPhoto(manId, fileId);
+            db.clearUserState(user.tgId());
+            sendText(message.getChatId(), "Фото обновлено.");
+        } else {
+            sendAdminPhotoPrompt(message.getChatId());
+        }
     }
 
     private void handleAdminAddContact(User user, Message message) throws Exception {
@@ -686,13 +693,14 @@ public class BotService extends TelegramLongPollingBot {
             sendText(chatId, "Нет данных для создания карточки.");
             return;
         }
-        db.updateUserState(user.tgId(), UserState.WAIT_MAN_PHOTO, user.statePayload());
-        sendSkipPrompt(chatId, "Отправьте фото мужчины или нажмите «Пропустить».", "skip:man_photo");
+        String payload = Payload.put(user.statePayload(), "flow", "review");
+        createManFromPayload(user, chatId, payload);
     }
 
     private void createManFromPayload(User user, long chatId, String payloadRaw) throws Exception {
         Map<String, String> map = Payload.parse(payloadRaw);
         String flow = map.getOrDefault("flow", "find");
+        boolean adminFlow = "admin".equals(flow);
         String phone = emptyToNull(map.get("phone"));
         String tgUsername = emptyToNull(map.get("tg_username"));
         String tgId = emptyToNull(map.get("tg_id"));
@@ -701,8 +709,16 @@ public class BotService extends TelegramLongPollingBot {
         String photo = emptyToNull(map.get("photo"));
 
         if (name == null || name.isBlank()) {
-            sendText(chatId, "Имя не задано, карточка не создана.");
-            return;
+            if (adminFlow) {
+                sendText(chatId, "Имя не задано, карточка не создана.");
+                return;
+            }
+            name = defaultManName(phone, tgUsername, tgId);
+        }
+
+        if (!adminFlow) {
+            desc = null;
+            photo = null;
         }
 
         Man man = db.createMan(phone, tgUsername, tgId, name, desc, photo, user.id());
@@ -774,18 +790,10 @@ public class BotService extends TelegramLongPollingBot {
         long chatId = cb.getMessage().getChatId();
         switch (action) {
             case "man_photo" -> {
-                if (user.state() == UserState.WAIT_MAN_PHOTO) {
-                    String payload = Payload.put(user.statePayload(), "photo", "");
-                    db.updateUserState(user.tgId(), UserState.WAIT_MAN_NAME, payload);
-                    sendText(chatId, "Введите имя мужчины.");
-                }
+                startCreateMan(user, chatId);
             }
             case "man_desc" -> {
-                if (user.state() == UserState.WAIT_MAN_DESC) {
-                    String payload = Payload.put(user.statePayload(), "desc", "");
-                    db.updateUserState(user.tgId(), UserState.NONE, payload);
-                    createManFromPayload(user, chatId, payload);
-                }
+                startCreateMan(user, chatId);
             }
             case "review_text" -> {
                 if (user.state() == UserState.WAIT_REVIEW_TEXT) {
@@ -910,13 +918,19 @@ public class BotService extends TelegramLongPollingBot {
                 db.restoreMan(manId);
                 sendText(chatId, "Карточка восстановлена.");
             }
-            case "review_approve" -> {
-                int reviewId = Integer.parseInt(parts[2]);
-                approveReview(reviewId, user);
+            case "photo" -> {
+                int offset = Integer.parseInt(parts[2]);
+                sendAdminPhotoMenList(chatId, offset, cb.getMessage().getMessageId());
             }
-            case "review_reject" -> {
-                int reviewId = Integer.parseInt(parts[2]);
-                rejectReview(reviewId, user);
+            case "setphoto" -> {
+                int manId = Integer.parseInt(parts[2]);
+                String payload = Payload.put(null, "man_id", String.valueOf(manId));
+                db.updateUserState(user.tgId(), UserState.WAIT_ADMIN_SET_PHOTO, payload);
+                sendAdminPhotoPrompt(chatId);
+            }
+            case "photo_cancel" -> {
+                db.clearUserState(user.tgId());
+                sendAdminMenu(chatId);
             }
             case "price" -> {
                 String key = parts[2];
@@ -974,8 +988,8 @@ public class BotService extends TelegramLongPollingBot {
 
     private void sendCreatePrompt(long chatId) throws Exception {
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        rows.add(List.of(btn("➕ Создать карточку", "create:man"), btn("❌ Отмена", "menu:main")));
-        SendMessage sm = new SendMessage(String.valueOf(chatId), "Запись не найдена. Создать новую карточку?");
+        rows.add(List.of(btn("📝 Оставить первый отзыв", "create:man"), btn("❌ Отмена", "menu:main")));
+        SendMessage sm = new SendMessage(String.valueOf(chatId), "Мужчина не найден. Хотите оставить первый отзыв?");
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
         execute(sm);
     }
@@ -1052,7 +1066,8 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         Review r = list.get(0);
-        String text = "Отзывы о " + man.name() + "\n\n" + formatReview(r);
+        String header = buildManHeaderText(man, user.isAdmin() && man.isClosed());
+        String text = header + "\n\nОтзыв:\n" + formatReview(r);
 
         int total = db.reviewCount(manId);
         boolean hasPrev = offset > 0;
@@ -1099,7 +1114,7 @@ public class BotService extends TelegramLongPollingBot {
         Review r = list.get(0);
         Man man = db.getManById(r.manId());
         String manName = man != null ? man.name() : "(удалён)";
-        String text = "Ваш отзыв о " + manName + "\n\n" + formatReviewWithStatus(r);
+        String text = "Ваш отзыв о " + manName + "\n\n" + formatReview(r);
 
         int total = db.countReviewsByAuthor(user.id());
         boolean hasPrev = offset > 0;
@@ -1155,6 +1170,7 @@ public class BotService extends TelegramLongPollingBot {
         rows.add(List.of(btn("📊 Статистика", "admin:stats")));
         rows.add(List.of(btn("💰 Цены", "admin:prices")));
         rows.add(List.of(btn("➕ Добавить мужчину", "admin:addman")));
+        rows.add(List.of(btn("📷 Добавить фото", "admin:photo:0")));
         rows.add(List.of(btn("📁 Закрытые карточки", "admin:closed:0")));
         rows.add(List.of(btn("➕ Добавить админа", "admin:addadmin")));
         SendMessage sm = new SendMessage(String.valueOf(chatId), "Админ-панель:");
@@ -1455,6 +1471,78 @@ public class BotService extends TelegramLongPollingBot {
         }
     }
 
+    private void sendAdminPhotoPrompt(long chatId) throws Exception {
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        rows.add(List.of(btn("❌ Отмена", "admin:photo_cancel")));
+        SendMessage sm = new SendMessage(String.valueOf(chatId), "Отправьте фото мужчины.");
+        sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
+        execute(sm);
+    }
+
+    private void sendAdminPhotoMenList(long chatId, int offset, Integer messageId) throws Exception {
+        List<Man> list = db.listMen(1, offset);
+        if (list.isEmpty()) {
+            sendText(chatId, "Список пуст.");
+            return;
+        }
+        Man man = list.get(0);
+        int total = db.countMen();
+        boolean hasPrev = offset > 0;
+        boolean hasNext = offset + 1 < total;
+
+        String text = buildManPreviewText(man, false);
+        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
+        String prev = hasPrev ? ("admin:photo:" + (offset - 1)) : null;
+        String next = hasNext ? ("admin:photo:" + (offset + 1)) : null;
+        List<InlineKeyboardButton> nav = buildItemNavRow(offset, total, prev, next);
+        if (!nav.isEmpty()) rows.add(nav);
+        rows.add(List.of(btn("📷 Выбрать карточку", "admin:setphoto:" + man.id())));
+        rows.add(List.of(btn("⬅️ Назад", "menu:admin")));
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
+
+        if (messageId != null) {
+            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
+                try {
+                    InputMediaPhoto media = new InputMediaPhoto(man.photoFileId());
+                    media.setCaption(text);
+                    EditMessageMedia emm = new EditMessageMedia();
+                    emm.setChatId(String.valueOf(chatId));
+                    emm.setMessageId(messageId);
+                    emm.setMedia(media);
+                    emm.setReplyMarkup(markup);
+                    execute(emm);
+                } catch (Exception ex) {
+                    EditMessageText em = new EditMessageText();
+                    em.setChatId(String.valueOf(chatId));
+                    em.setMessageId(messageId);
+                    em.setText(text);
+                    em.setReplyMarkup(markup);
+                    execute(em);
+                }
+            } else {
+                EditMessageText em = new EditMessageText();
+                em.setChatId(String.valueOf(chatId));
+                em.setMessageId(messageId);
+                em.setText(text);
+                em.setReplyMarkup(markup);
+                execute(em);
+            }
+        } else {
+            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
+                SendPhoto sp = new SendPhoto();
+                sp.setChatId(String.valueOf(chatId));
+                sp.setPhoto(new InputFile(man.photoFileId()));
+                sp.setCaption(text);
+                sp.setReplyMarkup(markup);
+                execute(sp);
+            } else {
+                SendMessage sm = new SendMessage(String.valueOf(chatId), text);
+                sm.setReplyMarkup(markup);
+                execute(sm);
+            }
+        }
+    }
+
     private void sendInvoiceForPayment(long chatId, Payment payment, String title, String description) throws Exception {
         String payload = "pay:" + payment.id();
         int amountKop = payment.amount() * 100;
@@ -1472,32 +1560,6 @@ public class BotService extends TelegramLongPollingBot {
         invoice.setSendEmailToProvider(true);
         invoice.setProviderData(buildProviderData(title, payment.amount()));
         execute(invoice);
-    }
-
-    private void notifyAdminsForReview(int reviewId) throws Exception {
-        Review review = db.getReviewById(reviewId);
-        if (review == null) return;
-        Man man = db.getManById(review.manId());
-        Db.User author = db.getUserById(review.authorId());
-        String text = "Новый отзыв на модерацию #" + review.id() + "\n" +
-                "Мужчина: " + (man != null ? man.name() : "(не найден)") + "\n" +
-                "Автор: " + (author != null ? (safeName(author.firstName()) + " " + safeUsername(author.username()) + " | TG: " + author.tgId()) : "не найден") + "\n" +
-                "Оценка: " + review.rating() + "\n" +
-                "Текст: " + (review.text() == null ? "(без комментария)" : review.text());
-        List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        rows.add(List.of(
-                btn("✅ Одобрить", "admin:review_approve:" + review.id()),
-                btn("❌ Отклонить", "admin:review_reject:" + review.id())
-        ));
-        for (long adminId : getAllAdminIds()) {
-            SendMessage sm = new SendMessage(String.valueOf(adminId), text);
-            sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
-            try {
-                execute(sm);
-            } catch (Exception ex) {
-                // Админ ещё не писал боту — Telegram вернёт chat not found
-            }
-        }
     }
 
     private void handlePreCheckout(PreCheckoutQuery query) throws Exception {
@@ -1555,34 +1617,6 @@ public class BotService extends TelegramLongPollingBot {
             db.grantAccess(user.id(), payment.manId(), null);
             sendText(user.tgId(), "Оплата получена. Доступ открыт.");
         }
-    }
-
-    private void approveReview(int reviewId, User admin) throws Exception {
-        Review review = db.getReviewById(reviewId);
-        if (review == null) {
-            sendText(admin.tgId(), "Отзыв не найден.");
-            return;
-        }
-        db.updateReviewStatus(reviewId, "APPROVED");
-        User author = db.getUserById(review.authorId());
-        if (author != null) {
-            sendTextWithMenuButton(author.tgId(), "Ваш отзыв одобрен.");
-        }
-        sendText(admin.tgId(), "Отзыв одобрен.");
-    }
-
-    private void rejectReview(int reviewId, User admin) throws Exception {
-        Review review = db.getReviewById(reviewId);
-        if (review == null) {
-            sendText(admin.tgId(), "Отзыв не найден.");
-            return;
-        }
-        db.updateReviewStatus(reviewId, "REJECTED");
-        User author = db.getUserById(review.authorId());
-        if (author != null) {
-            sendText(author.tgId(), "Ваш отзыв отклонён.");
-        }
-        sendText(admin.tgId(), "Отзыв отклонён.");
     }
 
     private boolean hasAccess(User user, Man man) throws Exception {
@@ -1670,14 +1704,19 @@ public class BotService extends TelegramLongPollingBot {
         return stars + " | " + date + "\n" + text;
     }
 
-    private String formatReviewWithStatus(Review r) {
-        String status = r.status() == null ? "PENDING" : r.status();
-        String statusRu = switch (status) {
-            case "APPROVED" -> "Одобрен";
-            case "REJECTED" -> "Отклонён";
-            default -> "На модерации";
-        };
-        return formatReview(r) + "\nСтатус: " + statusRu;
+    private String buildManHeaderText(Man man, boolean showClosedStatus) throws Exception {
+        double avg = db.averageRating(man.id());
+        int count = db.reviewCount(man.id());
+        StringBuilder sb = new StringBuilder();
+        sb.append("Имя: ").append(man.name()).append("\n");
+        if (showClosedStatus && man.isClosed()) sb.append("Статус: закрыта\n");
+        if (man.phone() != null) sb.append("Телефон: ").append(man.phone()).append("\n");
+        if (man.tgUsername() != null) sb.append("Telegram: @").append(man.tgUsername()).append("\n");
+        if (man.tgId() != null) sb.append("Telegram ID: ").append(man.tgId()).append("\n");
+        sb.append("Средний рейтинг: ")
+                .append(String.format(Locale.forLanguageTag("ru"), "%.2f", avg))
+                .append(" (отзывов: ").append(count).append(")");
+        return sb.toString();
     }
 
     private String buildManPreviewText(Man man, boolean showClosedStatus) throws Exception {
@@ -1768,6 +1807,19 @@ public class BotService extends TelegramLongPollingBot {
 
     private String emptyToNull(String s) {
         return (s == null || s.isBlank()) ? null : s;
+    }
+
+    private String defaultManName(String phone, String tgUsername, String tgId) {
+        if (tgUsername != null && !tgUsername.isBlank()) return "@" + tgUsername;
+        if (tgId != null && !tgId.isBlank()) return "TG ID " + tgId;
+        if (phone != null && !phone.isBlank()) return phone;
+        return "Без имени";
+    }
+
+    private String normalizeReviewText(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.isEmpty() ? null : t;
     }
 
     private List<Long> getAllAdminIds() throws Exception {
