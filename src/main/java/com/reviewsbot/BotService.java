@@ -450,13 +450,7 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void handleManName(User user, Message message) throws Exception {
-        if (!message.hasText() || message.getText().isBlank()) {
-            sendText(message.getChatId(), "Имя не распознано. Попробуйте ещё раз.");
-            return;
-        }
-        String payload = Payload.put(user.statePayload(), "name", message.getText().trim());
-        db.updateUserState(user.tgId(), UserState.NONE, payload);
-        createManFromPayload(user, message.getChatId(), payload);
+        startCreateMan(user, message.getChatId());
     }
 
     private void handleManDesc(User user, Message message) throws Exception {
@@ -712,8 +706,7 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         String payload = Payload.put(user.statePayload(), "flow", "review");
-        db.updateUserState(user.tgId(), UserState.WAIT_MAN_NAME, payload);
-        sendText(chatId, "Введите имя мужчины.");
+        createManFromPayload(user, chatId, payload);
     }
 
     private void createManFromPayload(User user, long chatId, String payloadRaw) throws Exception {
@@ -728,8 +721,7 @@ public class BotService extends TelegramLongPollingBot {
         String photo = emptyToNull(map.get("photo"));
 
         if (name == null || name.isBlank()) {
-            sendText(chatId, "Имя не задано, карточка не создана.");
-            return;
+            name = "";
         }
 
         if (!adminFlow) {
@@ -997,7 +989,6 @@ public class BotService extends TelegramLongPollingBot {
         if ("find".equals(flow)) {
             rows.add(List.of(btn("🔎 Поиск по номеру", "find:phone")));
             rows.add(List.of(btn("✍️ Ввести тег ТГ", "find:tg")));
-            rows.add(List.of(btn("🔎 Поиск по имени", "find:name")));
             rows.add(List.of(btn("📋 Все мужчины", "menlist:find:0")));
         } else {
             rows.add(List.of(btn("🔎 Поиск по номеру", "review:phone")));
@@ -1657,7 +1648,6 @@ public class BotService extends TelegramLongPollingBot {
         double avg = db.averageRating(man.id());
         int count = db.reviewCount(man.id());
         StringBuilder sb = new StringBuilder();
-        sb.append("Имя: ").append(man.name()).append("\n");
         if (showClosedStatus && man.isClosed()) sb.append("Статус: закрыта\n");
         if (man.phone() != null) sb.append("Телефон: ").append(man.phone()).append("\n");
         if (man.tgUsername() != null) sb.append("Telegram: @").append(man.tgUsername()).append("\n");
@@ -1672,7 +1662,6 @@ public class BotService extends TelegramLongPollingBot {
         double avg = db.averageRating(man.id());
         int count = db.reviewCount(man.id());
         StringBuilder sb = new StringBuilder();
-        sb.append("Имя: ").append(man.name()).append("\n");
         if (showClosedStatus && man.isClosed()) sb.append("Статус: закрыта\n");
         if (man.phone() != null) sb.append("Телефон: ").append(man.phone()).append("\n");
         if (man.tgUsername() != null) sb.append("Telegram: @").append(man.tgUsername()).append("\n");

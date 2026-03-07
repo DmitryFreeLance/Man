@@ -29,6 +29,9 @@ public class Db {
     public record ManStats(int id, String name, String phone, String tgUsername, String tgId, int reviewsCount, double avgRating) {}
     public record ManSheet(int manId, int sheetId, String sheetName) {}
     public record ReviewSheet(int reviewId, int manId, int sheetId, int rowIndex) {}
+    public record ReviewExport(int reviewId, int manId, String manPhone, String manTgUsername, String manTgId,
+                               int rating, String text, Instant createdAt,
+                               long authorTgId, String authorName, String authorUsername) {}
 
     public Db(BotConfig config) throws Exception {
         this.config = config;
@@ -45,6 +48,7 @@ public class Db {
         ensureMenClosedColumn();
         ensureNoSecretState();
         ensureSheetsTables();
+        ensureNoNames();
         ensureDefaultSettings();
     }
 
@@ -70,6 +74,12 @@ public class Db {
     private void ensureNoSecretState() throws SQLException {
         try (Statement st = conn.createStatement()) {
             st.execute("UPDATE users SET state='NONE' WHERE state='WAIT_SECRET'");
+        }
+    }
+
+    private void ensureNoNames() throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("UPDATE men SET name='' WHERE name IS NOT NULL AND name<>''");
         }
     }
 
@@ -276,6 +286,19 @@ public class Db {
         return 0;
     }
 
+    public synchronized String getSetting(String key) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT value FROM settings WHERE key=?")) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getString(1);
+                }
+            }
+        }
+        return null;
+    }
+
     public synchronized void setSetting(String key, String value) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO settings(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")) {
@@ -283,6 +306,37 @@ public class Db {
             ps.setString(2, value);
             ps.executeUpdate();
         }
+    }
+
+    public synchronized List<ReviewExport> listAllReviewsForSheets() throws SQLException {
+        List<ReviewExport> list = new ArrayList<>();
+        String sql = "SELECT r.id AS review_id, r.man_id, r.rating, r.text, r.created_at, " +
+                "m.phone AS man_phone, m.tg_username AS man_tg_username, m.tg_id AS man_tg_id, " +
+                "u.tg_id AS author_tg_id, u.first_name AS author_name, u.tg_username AS author_username " +
+                "FROM reviews r " +
+                "JOIN men m ON r.man_id = m.id " +
+                "JOIN users u ON r.author_id = u.id " +
+                "ORDER BY r.id ASC";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new ReviewExport(
+                            rs.getInt("review_id"),
+                            rs.getInt("man_id"),
+                            rs.getString("man_phone"),
+                            rs.getString("man_tg_username"),
+                            rs.getString("man_tg_id"),
+                            rs.getInt("rating"),
+                            rs.getString("text"),
+                            TimeUtil.parseIso(rs.getString("created_at")),
+                            rs.getLong("author_tg_id"),
+                            rs.getString("author_name"),
+                            rs.getString("author_username")
+                    ));
+                }
+            }
+        }
+        return list;
     }
 
     public synchronized Man findManByPhone(String phone) throws SQLException {

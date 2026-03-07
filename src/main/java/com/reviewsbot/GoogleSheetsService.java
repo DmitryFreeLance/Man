@@ -8,6 +8,7 @@ import com.google.api.services.sheets.v4.model.AddSheetRequest;
 import com.google.api.services.sheets.v4.model.AppendValuesResponse;
 import com.google.api.services.sheets.v4.model.BatchUpdateSpreadsheetRequest;
 import com.google.api.services.sheets.v4.model.BatchUpdateSpreadsheetResponse;
+import com.google.api.services.sheets.v4.model.ClearValuesRequest;
 import com.google.api.services.sheets.v4.model.Request;
 import com.google.api.services.sheets.v4.model.SheetProperties;
 import com.google.api.services.sheets.v4.model.Spreadsheet;
@@ -19,21 +20,25 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
-import java.util.HashSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class GoogleSheetsService {
+    private static final String UNIFIED_SHEET_TITLE = "Отзывы";
     private final Db db;
     private final Sheets sheets;
     private final String spreadsheetId;
     private final boolean enabled;
+    private SheetRef cachedSheet;
+
     private final DateTimeFormatter dateFmt = DateTimeFormatter.ofPattern("dd.MM.yyyy")
             .withLocale(Locale.forLanguageTag("ru"))
             .withZone(ZoneId.systemDefault());
+
+    private record SheetRef(int sheetId, String sheetName) {}
 
     public GoogleSheetsService(BotConfig config, Db db) {
         this.db = db;
@@ -61,16 +66,19 @@ public class GoogleSheetsService {
         this.sheets = client;
         this.spreadsheetId = sheetId;
         this.enabled = ok;
-    }
-
-    public boolean isEnabled() {
-        return enabled;
+        if (ok) {
+            try {
+                migrateUnifiedSheetIfNeeded();
+            } catch (Exception ex) {
+                ex.printStackTrace();
+            }
+        }
     }
 
     public void syncReview(Db.Man man, Db.Review review, Db.User author) {
         if (!enabled) return;
         try {
-            Db.ManSheet sheet = ensureSheet(man);
+            SheetRef sheet = getUnifiedSheet();
             int rowIndex = ensureReviewRow(sheet, man, review, author);
             updateRow(sheet.sheetName(), rowIndex, man, review, author, "OK");
         } catch (Exception ex) {
@@ -83,59 +91,96 @@ public class GoogleSheetsService {
         try {
             Db.ReviewSheet rs = db.getReviewSheet(review.id());
             if (rs == null) return;
-            Db.ManSheet sheet = db.getManSheet(review.manId());
-            if (sheet == null) return;
+            SheetRef sheet = getUnifiedSheet();
             updateRow(sheet.sheetName(), rs.rowIndex(), man, review, author, "Удалён");
         } catch (Exception ex) {
             ex.printStackTrace();
         }
     }
 
-    private Db.ManSheet ensureSheet(Db.Man man) throws Exception {
-        Db.ManSheet existing = db.getManSheet(man.id());
-        if (existing != null) return existing;
-        String baseTitle = buildSheetTitle(man);
-        String title = ensureUniqueTitle(baseTitle);
+    private void migrateUnifiedSheetIfNeeded() throws Exception {
+        String flag = db.getSetting("sheets_unified_migrated");
+        if ("1".equals(flag)) return;
+        SheetRef sheet = getUnifiedSheet();
+        sheets.spreadsheets().values()
+                .clear(spreadsheetId, sheet.sheetName() + "!A:Z", new ClearValuesRequest())
+                .execute();
+
+        List<List<Object>> values = new ArrayList<>();
+        values.add(headerRow());
+
+        List<Db.ReviewExport> exports = db.listAllReviewsForSheets();
+        int rowIndex = 2;
+        for (Db.ReviewExport r : exports) {
+            values.add(buildRow(
+                    r.manPhone(),
+                    r.manTgUsername(),
+                    r.manTgId(),
+                    r.manId(),
+                    r.reviewId(),
+                    r.createdAt(),
+                    r.rating(),
+                    r.text(),
+                    r.authorTgId(),
+                    r.authorName(),
+                    r.authorUsername(),
+                    "OK"
+            ));
+            db.upsertReviewSheet(r.reviewId(), r.manId(), sheet.sheetId(), rowIndex++);
+        }
+
+        ValueRange body = new ValueRange().setValues(values);
+        sheets.spreadsheets().values()
+                .update(spreadsheetId, sheet.sheetName() + "!A1:I" + values.size(), body)
+                .setValueInputOption("RAW")
+                .execute();
+
+        db.setSetting("sheets_unified_migrated", "1");
+    }
+
+    private SheetRef getUnifiedSheet() throws Exception {
+        if (cachedSheet != null) return cachedSheet;
+        Spreadsheet ss = sheets.spreadsheets().get(spreadsheetId)
+                .setFields("sheets.properties.sheetId,sheets.properties.title")
+                .execute();
+        if (ss.getSheets() != null) {
+            for (var s : ss.getSheets()) {
+                if (UNIFIED_SHEET_TITLE.equals(s.getProperties().getTitle())) {
+                    cachedSheet = new SheetRef(s.getProperties().getSheetId(), UNIFIED_SHEET_TITLE);
+                    return cachedSheet;
+                }
+            }
+        }
         AddSheetRequest addSheet = new AddSheetRequest()
-                .setProperties(new SheetProperties().setTitle(title));
+                .setProperties(new SheetProperties().setTitle(UNIFIED_SHEET_TITLE));
         BatchUpdateSpreadsheetRequest req = new BatchUpdateSpreadsheetRequest()
                 .setRequests(List.of(new Request().setAddSheet(addSheet)));
         BatchUpdateSpreadsheetResponse resp = sheets.spreadsheets().batchUpdate(spreadsheetId, req).execute();
         int sheetId = resp.getReplies().get(0).getAddSheet().getProperties().getSheetId();
-        db.upsertManSheet(man.id(), sheetId, title);
-        writeHeader(title);
-        return new Db.ManSheet(man.id(), sheetId, title);
-    }
-
-    private String buildSheetTitle(Db.Man man) {
-        if (man.phone() != null && !man.phone().isBlank()) {
-            return sanitizeSheetTitle(man.phone());
-        }
-        if (man.tgUsername() != null && !man.tgUsername().isBlank()) {
-            return sanitizeSheetTitle("@" + man.tgUsername());
-        }
-        if (man.tgId() != null && !man.tgId().isBlank()) {
-            return sanitizeSheetTitle("TGID_" + man.tgId());
-        }
-        return sanitizeSheetTitle(man.name());
+        cachedSheet = new SheetRef(sheetId, UNIFIED_SHEET_TITLE);
+        writeHeader(UNIFIED_SHEET_TITLE);
+        return cachedSheet;
     }
 
     private void writeHeader(String sheetName) throws Exception {
-        List<Object> header = List.of("Review ID", "Дата", "Оценка", "Текст", "Автор ID", "Автор", "Тег", "Статус");
-        ValueRange body = new ValueRange().setValues(List.of(header));
+        ValueRange body = new ValueRange().setValues(List.of(headerRow()));
         sheets.spreadsheets().values()
-                .update(spreadsheetId, sheetName + "!A1:H1", body)
+                .update(spreadsheetId, sheetName + "!A1:I1", body)
                 .setValueInputOption("RAW")
                 .execute();
     }
 
-    private int ensureReviewRow(Db.ManSheet sheet, Db.Man man, Db.Review review, Db.User author) throws Exception {
+    private List<Object> headerRow() {
+        return List.of("Review ID", "Мужчина", "Дата", "Оценка", "Текст", "Автор ID", "Автор", "Тег", "Статус");
+    }
+
+    private int ensureReviewRow(SheetRef sheet, Db.Man man, Db.Review review, Db.User author) throws Exception {
         Db.ReviewSheet existing = db.getReviewSheet(review.id());
         if (existing != null) return existing.rowIndex();
         List<Object> row = buildRow(man, review, author, "OK");
         ValueRange body = new ValueRange().setValues(List.of(row));
         AppendValuesResponse resp = sheets.spreadsheets().values()
-                .append(spreadsheetId, sheet.sheetName() + "!A:H", body)
+                .append(spreadsheetId, sheet.sheetName() + "!A:I", body)
                 .setValueInputOption("RAW")
                 .setInsertDataOption("INSERT_ROWS")
                 .setIncludeValuesInResponse(true)
@@ -153,7 +198,7 @@ public class GoogleSheetsService {
     private void updateRow(String sheetName, int rowIndex, Db.Man man, Db.Review review, Db.User author, String status) throws Exception {
         List<Object> row = buildRow(man, review, author, status);
         ValueRange body = new ValueRange().setValues(List.of(row));
-        String range = sheetName + "!A" + rowIndex + ":H" + rowIndex;
+        String range = sheetName + "!A" + rowIndex + ":I" + rowIndex;
         sheets.spreadsheets().values()
                 .update(spreadsheetId, range, body)
                 .setValueInputOption("RAW")
@@ -161,20 +206,48 @@ public class GoogleSheetsService {
     }
 
     private List<Object> buildRow(Db.Man man, Db.Review review, Db.User author, String status) {
-        String date = review.createdAt() == null ? "" : dateFmt.format(review.createdAt());
-        String authorName = author != null && author.firstName() != null ? author.firstName() : "";
-        String authorTag = author != null && author.username() != null ? ("@" + author.username()) : "";
-        String text = review.text() == null ? "" : review.text();
-        return List.of(
+        return buildRow(
+                man.phone(),
+                man.tgUsername(),
+                man.tgId(),
+                man.id(),
                 review.id(),
-                date,
+                review.createdAt(),
                 review.rating(),
-                text,
-                author != null ? String.valueOf(author.tgId()) : "",
-                authorName,
+                review.text(),
+                author != null ? author.tgId() : 0,
+                author != null ? author.firstName() : "",
+                author != null ? author.username() : "",
+                status
+        );
+    }
+
+    private List<Object> buildRow(String manPhone, String manTgUsername, String manTgId, int manId,
+                                  int reviewId, java.time.Instant createdAt, int rating, String text,
+                                  long authorTgId, String authorName, String authorUsername, String status) {
+        String date = createdAt == null ? "" : dateFmt.format(createdAt);
+        String authorTag = authorUsername == null || authorUsername.isBlank() ? "" : ("@" + authorUsername);
+        String manRef = formatManRef(manPhone, manTgUsername, manTgId, manId);
+        String safeText = text == null ? "" : text;
+        String safeName = authorName == null ? "" : authorName;
+        return List.of(
+                reviewId,
+                manRef,
+                date,
+                rating,
+                safeText,
+                authorTgId == 0 ? "" : String.valueOf(authorTgId),
+                safeName,
                 authorTag,
                 status
         );
+    }
+
+    private String formatManRef(String phone, String tgUsername, String tgId, int manId) {
+        if (phone != null && !phone.isBlank()) return phone;
+        if (tgUsername != null && !tgUsername.isBlank()) return "@" + tgUsername;
+        if (tgId != null && !tgId.isBlank()) return "TGID_" + tgId;
+        return "MAN_" + manId;
     }
 
     private int extractRowIndex(String range) {
@@ -184,30 +257,5 @@ public class GoogleSheetsService {
             return Integer.parseInt(m.group(1));
         }
         return -1;
-    }
-
-    private String sanitizeSheetTitle(String title) {
-        String t = title.replaceAll("[\\\\/?*\\[\\]]", " ").trim();
-        if (t.length() > 100) t = t.substring(0, 100);
-        if (t.isBlank()) t = "man_sheet";
-        return t;
-    }
-
-    private String ensureUniqueTitle(String base) throws Exception {
-        Set<String> titles = new HashSet<>();
-        Spreadsheet ss = sheets.spreadsheets().get(spreadsheetId)
-                .setFields("sheets.properties.title")
-                .execute();
-        if (ss.getSheets() != null) {
-            ss.getSheets().forEach(s -> titles.add(s.getProperties().getTitle()));
-        }
-        if (!titles.contains(base)) return base;
-        int i = 2;
-        String candidate = base + "_" + i;
-        while (titles.contains(candidate)) {
-            i++;
-            candidate = base + "_" + i;
-        }
-        return candidate;
     }
 }
