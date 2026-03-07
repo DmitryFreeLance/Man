@@ -450,7 +450,13 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void handleManName(User user, Message message) throws Exception {
-        startCreateMan(user, message.getChatId());
+        if (!message.hasText() || message.getText().isBlank()) {
+            sendText(message.getChatId(), "Имя не распознано. Попробуйте ещё раз.");
+            return;
+        }
+        String payload = Payload.put(user.statePayload(), "name", message.getText().trim());
+        db.updateUserState(user.tgId(), UserState.NONE, payload);
+        createManFromPayload(user, message.getChatId(), payload);
     }
 
     private void handleManDesc(User user, Message message) throws Exception {
@@ -500,7 +506,7 @@ public class BotService extends TelegramLongPollingBot {
         } else {
             Review review = db.createReview(manId, user.id(), rating, text);
             db.clearUserState(user.tgId());
-            sendText(chatId, "Отзыв опубликован.");
+            sendTextWithMenuButton(chatId, "Отзыв опубликован.");
             if (review != null) {
                 Man man = db.getManById(manId);
                 if (man != null) {
@@ -706,7 +712,8 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         String payload = Payload.put(user.statePayload(), "flow", "review");
-        createManFromPayload(user, chatId, payload);
+        db.updateUserState(user.tgId(), UserState.WAIT_MAN_NAME, payload);
+        sendText(chatId, "Введите имя мужчины.");
     }
 
     private void createManFromPayload(User user, long chatId, String payloadRaw) throws Exception {
@@ -721,11 +728,8 @@ public class BotService extends TelegramLongPollingBot {
         String photo = emptyToNull(map.get("photo"));
 
         if (name == null || name.isBlank()) {
-            if (adminFlow) {
-                sendText(chatId, "Имя не задано, карточка не создана.");
-                return;
-            }
-            name = defaultManName(phone, tgUsername, tgId);
+            sendText(chatId, "Имя не задано, карточка не создана.");
+            return;
         }
 
         if (!adminFlow) {
@@ -1007,7 +1011,8 @@ public class BotService extends TelegramLongPollingBot {
 
     private void sendCreatePrompt(long chatId) throws Exception {
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
-        rows.add(List.of(btn("📝 Оставить первый отзыв", "create:man"), btn("❌ Отмена", "menu:main")));
+        rows.add(List.of(btn("📝 Оставить первый отзыв", "create:man")));
+        rows.add(List.of(btn("❌ Отмена", "menu:main")));
         SendMessage sm = new SendMessage(String.valueOf(chatId), "Мужчина не найден. Хотите оставить первый отзыв?");
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
         execute(sm);
@@ -1376,51 +1381,22 @@ public class BotService extends TelegramLongPollingBot {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
         if (messageId != null) {
-            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
-                try {
-                    InputMediaPhoto media = new InputMediaPhoto(man.photoFileId());
-                    media.setCaption(text);
-                    EditMessageMedia emm = new EditMessageMedia();
-                    emm.setChatId(String.valueOf(chatId));
-                    emm.setMessageId(messageId);
-                    emm.setMedia(media);
-                    emm.setReplyMarkup(markup);
-                    execute(emm);
-                } catch (Exception ex) {
-                    EditMessageText em = new EditMessageText();
-                    em.setChatId(String.valueOf(chatId));
-                    em.setMessageId(messageId);
-                    em.setText(text);
-                    em.setReplyMarkup(markup);
-                    execute(em);
-                }
-            } else {
-                try {
-                    EditMessageText em = new EditMessageText();
-                    em.setChatId(String.valueOf(chatId));
-                    em.setMessageId(messageId);
-                    em.setText(text);
-                    em.setReplyMarkup(markup);
-                    execute(em);
-                } catch (Exception ex) {
-                    SendMessage sm = new SendMessage(String.valueOf(chatId), text);
-                    sm.setReplyMarkup(markup);
-                    execute(sm);
-                }
-            }
-        } else {
-            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
-                SendPhoto sp = new SendPhoto();
-                sp.setChatId(String.valueOf(chatId));
-                sp.setPhoto(new InputFile(man.photoFileId()));
-                sp.setCaption(text);
-                sp.setReplyMarkup(markup);
-                execute(sp);
-            } else {
+            try {
+                EditMessageText em = new EditMessageText();
+                em.setChatId(String.valueOf(chatId));
+                em.setMessageId(messageId);
+                em.setText(text);
+                em.setReplyMarkup(markup);
+                execute(em);
+            } catch (Exception ex) {
                 SendMessage sm = new SendMessage(String.valueOf(chatId), text);
                 sm.setReplyMarkup(markup);
                 execute(sm);
             }
+        } else {
+            SendMessage sm = new SendMessage(String.valueOf(chatId), text);
+            sm.setReplyMarkup(markup);
+            execute(sm);
         }
     }
 
@@ -1448,45 +1424,22 @@ public class BotService extends TelegramLongPollingBot {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
         if (messageId != null) {
-            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
-                try {
-                    InputMediaPhoto media = new InputMediaPhoto(man.photoFileId());
-                    media.setCaption(text);
-                    EditMessageMedia emm = new EditMessageMedia();
-                    emm.setChatId(String.valueOf(chatId));
-                    emm.setMessageId(messageId);
-                    emm.setMedia(media);
-                    emm.setReplyMarkup(markup);
-                    execute(emm);
-                } catch (Exception ex) {
-                    EditMessageText em = new EditMessageText();
-                    em.setChatId(String.valueOf(chatId));
-                    em.setMessageId(messageId);
-                    em.setText(text);
-                    em.setReplyMarkup(markup);
-                    execute(em);
-                }
-            } else {
+            try {
                 EditMessageText em = new EditMessageText();
                 em.setChatId(String.valueOf(chatId));
                 em.setMessageId(messageId);
                 em.setText(text);
                 em.setReplyMarkup(markup);
                 execute(em);
-            }
-        } else {
-            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
-                SendPhoto sp = new SendPhoto();
-                sp.setChatId(String.valueOf(chatId));
-                sp.setPhoto(new InputFile(man.photoFileId()));
-                sp.setCaption(text);
-                sp.setReplyMarkup(markup);
-                execute(sp);
-            } else {
+            } catch (Exception ex) {
                 SendMessage sm = new SendMessage(String.valueOf(chatId), text);
                 sm.setReplyMarkup(markup);
                 execute(sm);
             }
+        } else {
+            SendMessage sm = new SendMessage(String.valueOf(chatId), text);
+            sm.setReplyMarkup(markup);
+            execute(sm);
         }
     }
 
@@ -1520,45 +1473,22 @@ public class BotService extends TelegramLongPollingBot {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup(rows);
 
         if (messageId != null) {
-            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
-                try {
-                    InputMediaPhoto media = new InputMediaPhoto(man.photoFileId());
-                    media.setCaption(text);
-                    EditMessageMedia emm = new EditMessageMedia();
-                    emm.setChatId(String.valueOf(chatId));
-                    emm.setMessageId(messageId);
-                    emm.setMedia(media);
-                    emm.setReplyMarkup(markup);
-                    execute(emm);
-                } catch (Exception ex) {
-                    EditMessageText em = new EditMessageText();
-                    em.setChatId(String.valueOf(chatId));
-                    em.setMessageId(messageId);
-                    em.setText(text);
-                    em.setReplyMarkup(markup);
-                    execute(em);
-                }
-            } else {
+            try {
                 EditMessageText em = new EditMessageText();
                 em.setChatId(String.valueOf(chatId));
                 em.setMessageId(messageId);
                 em.setText(text);
                 em.setReplyMarkup(markup);
                 execute(em);
-            }
-        } else {
-            if (man.photoFileId() != null && !man.photoFileId().isBlank()) {
-                SendPhoto sp = new SendPhoto();
-                sp.setChatId(String.valueOf(chatId));
-                sp.setPhoto(new InputFile(man.photoFileId()));
-                sp.setCaption(text);
-                sp.setReplyMarkup(markup);
-                execute(sp);
-            } else {
+            } catch (Exception ex) {
                 SendMessage sm = new SendMessage(String.valueOf(chatId), text);
                 sm.setReplyMarkup(markup);
                 execute(sm);
             }
+        } else {
+            SendMessage sm = new SendMessage(String.valueOf(chatId), text);
+            sm.setReplyMarkup(markup);
+            execute(sm);
         }
     }
 
@@ -1838,13 +1768,6 @@ public class BotService extends TelegramLongPollingBot {
 
     private String emptyToNull(String s) {
         return (s == null || s.isBlank()) ? null : s;
-    }
-
-    private String defaultManName(String phone, String tgUsername, String tgId) {
-        if (tgUsername != null && !tgUsername.isBlank()) return "@" + tgUsername;
-        if (tgId != null && !tgId.isBlank()) return "TG ID " + tgId;
-        if (phone != null && !phone.isBlank()) return phone;
-        return "Без имени";
     }
 
     private String normalizeReviewText(String s) {

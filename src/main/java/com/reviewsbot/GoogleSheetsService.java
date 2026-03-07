@@ -94,7 +94,7 @@ public class GoogleSheetsService {
     private Db.ManSheet ensureSheet(Db.Man man) throws Exception {
         Db.ManSheet existing = db.getManSheet(man.id());
         if (existing != null) return existing;
-        String baseTitle = sanitizeSheetTitle("man_" + man.id() + "_" + man.name());
+        String baseTitle = buildSheetTitle(man);
         String title = ensureUniqueTitle(baseTitle);
         AddSheetRequest addSheet = new AddSheetRequest()
                 .setProperties(new SheetProperties().setTitle(title));
@@ -105,6 +105,19 @@ public class GoogleSheetsService {
         db.upsertManSheet(man.id(), sheetId, title);
         writeHeader(title);
         return new Db.ManSheet(man.id(), sheetId, title);
+    }
+
+    private String buildSheetTitle(Db.Man man) {
+        if (man.phone() != null && !man.phone().isBlank()) {
+            return sanitizeSheetTitle(man.phone());
+        }
+        if (man.tgUsername() != null && !man.tgUsername().isBlank()) {
+            return sanitizeSheetTitle("@" + man.tgUsername());
+        }
+        if (man.tgId() != null && !man.tgId().isBlank()) {
+            return sanitizeSheetTitle("TGID_" + man.tgId());
+        }
+        return sanitizeSheetTitle(man.name());
     }
 
     private void writeHeader(String sheetName) throws Exception {
