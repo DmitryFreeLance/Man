@@ -9,7 +9,6 @@ public class BotConfig {
     public final String botToken;
     public final String botUsername;
     public final Set<Long> adminIds;
-    public final String secretCode;
     public final String dbPath;
     public final String providerToken;
 
@@ -22,10 +21,12 @@ public class BotConfig {
     public final int defaultPriceMonth;
     public final int defaultPriceSingle;
 
+    public final String sheetsCredentialsPath;
+    public final String sheetsSpreadsheetId;
+
     public BotConfig() {
         this.botToken = envOrThrow("BOT_TOKEN");
         this.botUsername = envOrDefault("BOT_USERNAME", "ReviewsBot");
-        this.secretCode = envOrDefault("SECRET_CODE", "1234");
         this.dbPath = envOrDefault("DB_PATH", "data/reviewsbot.sqlite");
         this.providerToken = envOrThrow("PROVIDER_TOKEN");
 
@@ -37,6 +38,9 @@ public class BotConfig {
         this.vatCode = Integer.parseInt(envOrDefault("VAT_CODE", "1"));
         this.paymentSubject = envOrDefault("PAYMENT_SUBJECT", "service");
         this.paymentMode = envOrDefault("PAYMENT_MODE", "full_payment");
+
+        this.sheetsCredentialsPath = envOrDefault("GOOGLE_SHEETS_CREDENTIALS", "");
+        this.sheetsSpreadsheetId = envOrDefault("GOOGLE_SHEETS_SPREADSHEET_ID", "");
 
         String admins = envOrDefault("ADMIN_IDS", "");
         if (admins.isBlank()) {

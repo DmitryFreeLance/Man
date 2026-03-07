@@ -27,6 +27,8 @@ public class Db {
 
     public record Stats(int users, int men, int reviews) {}
     public record ManStats(int id, String name, String phone, String tgUsername, String tgId, int reviewsCount, double avgRating) {}
+    public record ManSheet(int manId, int sheetId, String sheetName) {}
+    public record ReviewSheet(int reviewId, int manId, int sheetId, int rowIndex) {}
 
     public Db(BotConfig config) throws Exception {
         this.config = config;
@@ -41,7 +43,34 @@ public class Db {
         ensureReviewsApproved();
         ensureReviewNotifiedColumn();
         ensureMenClosedColumn();
+        ensureNoSecretState();
+        ensureSheetsTables();
         ensureDefaultSettings();
+    }
+
+    private void ensureSheetsTables() throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("CREATE TABLE IF NOT EXISTS man_sheets (" +
+                    "man_id INTEGER PRIMARY KEY, " +
+                    "sheet_id INTEGER NOT NULL, " +
+                    "sheet_name TEXT NOT NULL, " +
+                    "created_at TEXT NOT NULL, " +
+                    "FOREIGN KEY(man_id) REFERENCES men(id) ON DELETE CASCADE)");
+            st.execute("CREATE TABLE IF NOT EXISTS review_sheets (" +
+                    "review_id INTEGER PRIMARY KEY, " +
+                    "man_id INTEGER NOT NULL, " +
+                    "sheet_id INTEGER NOT NULL, " +
+                    "row_index INTEGER NOT NULL, " +
+                    "updated_at TEXT NOT NULL, " +
+                    "FOREIGN KEY(review_id) REFERENCES reviews(id) ON DELETE CASCADE, " +
+                    "FOREIGN KEY(man_id) REFERENCES men(id) ON DELETE CASCADE)");
+        }
+    }
+
+    private void ensureNoSecretState() throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("UPDATE users SET state='NONE' WHERE state='WAIT_SECRET'");
+        }
     }
 
     private void initSchema() throws Exception {
@@ -169,7 +198,7 @@ public class Db {
                 ps.setString(3, firstName);
                 ps.setInt(4, isAdmin ? 1 : 0);
                 ps.setString(5, TimeUtil.nowIso());
-                ps.setString(6, isAdmin ? UserState.NONE.name() : UserState.WAIT_SECRET.name());
+                ps.setString(6, UserState.NONE.name());
                 ps.executeUpdate();
             }
         } else {
@@ -271,7 +300,7 @@ public class Db {
     public synchronized Man findManByTgUsername(String username) throws SQLException {
         if (username == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men WHERE tg_username=? AND is_closed=0")) {
+                "SELECT * FROM men WHERE lower(tg_username)=lower(?) AND is_closed=0")) {
             ps.setString(1, username);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapMan(rs);
@@ -343,6 +372,69 @@ public class Db {
                 "UPDATE men SET photo_file_id=? WHERE id=?")) {
             ps.setString(1, photoFileId);
             ps.setInt(2, manId);
+            ps.executeUpdate();
+        }
+    }
+
+    public synchronized void updateManTelegram(int manId, String tgUsername, String tgId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "UPDATE men SET tg_username=COALESCE(?, tg_username), tg_id=COALESCE(?, tg_id) WHERE id=?")) {
+            ps.setString(1, tgUsername);
+            ps.setString(2, tgId);
+            ps.setInt(3, manId);
+            ps.executeUpdate();
+        }
+    }
+
+    public synchronized ManSheet getManSheet(int manId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT man_id, sheet_id, sheet_name FROM man_sheets WHERE man_id=?")) {
+            ps.setInt(1, manId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new ManSheet(rs.getInt(1), rs.getInt(2), rs.getString(3));
+                }
+            }
+        }
+        return null;
+    }
+
+    public synchronized void upsertManSheet(int manId, int sheetId, String sheetName) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO man_sheets(man_id, sheet_id, sheet_name, created_at) " +
+                        "VALUES(?,?,?,?) " +
+                        "ON CONFLICT(man_id) DO UPDATE SET sheet_id=excluded.sheet_id, sheet_name=excluded.sheet_name")) {
+            ps.setInt(1, manId);
+            ps.setInt(2, sheetId);
+            ps.setString(3, sheetName);
+            ps.setString(4, TimeUtil.nowIso());
+            ps.executeUpdate();
+        }
+    }
+
+    public synchronized ReviewSheet getReviewSheet(int reviewId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT review_id, man_id, sheet_id, row_index FROM review_sheets WHERE review_id=?")) {
+            ps.setInt(1, reviewId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new ReviewSheet(rs.getInt(1), rs.getInt(2), rs.getInt(3), rs.getInt(4));
+                }
+            }
+        }
+        return null;
+    }
+
+    public synchronized void upsertReviewSheet(int reviewId, int manId, int sheetId, int rowIndex) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT INTO review_sheets(review_id, man_id, sheet_id, row_index, updated_at) " +
+                        "VALUES(?,?,?,?,?) " +
+                        "ON CONFLICT(review_id) DO UPDATE SET row_index=excluded.row_index, updated_at=excluded.updated_at")) {
+            ps.setInt(1, reviewId);
+            ps.setInt(2, manId);
+            ps.setInt(3, sheetId);
+            ps.setInt(4, rowIndex);
+            ps.setString(5, TimeUtil.nowIso());
             ps.executeUpdate();
         }
     }

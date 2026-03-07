@@ -8,6 +8,7 @@ import com.reviewsbot.Db.User;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.AnswerCallbackQuery;
 import org.telegram.telegrambots.meta.api.methods.AnswerPreCheckoutQuery;
+import org.telegram.telegrambots.meta.api.methods.groupadministration.GetChat;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
 import org.telegram.telegrambots.meta.api.methods.send.SendPhoto;
 import org.telegram.telegrambots.meta.api.methods.send.SendInvoice;
@@ -15,6 +16,7 @@ import org.telegram.telegrambots.meta.api.methods.send.SendDocument;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageMedia;
 import org.telegram.telegrambots.meta.api.objects.CallbackQuery;
+import org.telegram.telegrambots.meta.api.objects.Chat;
 import org.telegram.telegrambots.meta.api.objects.InputFile;
 import org.telegram.telegrambots.meta.api.objects.Message;
 import org.telegram.telegrambots.meta.api.objects.PhotoSize;
@@ -45,11 +47,13 @@ import java.io.FileOutputStream;
 public class BotService extends TelegramLongPollingBot {
     private final BotConfig config;
     private final Db db;
+    private final GoogleSheetsService sheets;
     private final DateTimeFormatter dateFmt = DateTimeFormatter.ofPattern("dd.MM.yyyy").withLocale(Locale.forLanguageTag("ru"));
 
     public BotService(BotConfig config, Db db) {
         this.config = config;
         this.db = db;
+        this.sheets = new GoogleSheetsService(config, db);
     }
 
     @Override
@@ -117,11 +121,6 @@ public class BotService extends TelegramLongPollingBot {
             } else {
                 sendText(message.getChatId(), "Доступ запрещён.");
             }
-            return;
-        }
-
-        if (user.state() == UserState.WAIT_SECRET) {
-            handleSecret(user, text, message.getChatId());
             return;
         }
 
@@ -322,25 +321,9 @@ public class BotService extends TelegramLongPollingBot {
 
     private void handleStart(User user, Message message) throws Exception {
         if (user.state() == UserState.WAIT_SECRET) {
-            String text = message.hasText() ? message.getText().trim() : "";
-            if (text.startsWith("/start ")) {
-                String code = text.substring(7).trim();
-                handleSecret(user, code, message.getChatId());
-            } else {
-                sendText(message.getChatId(), "Введите секретный код доступа.");
-            }
-        } else {
-            sendMainMenu(message.getChatId(), user, welcomeText());
-        }
-    }
-
-    private void handleSecret(User user, String code, long chatId) throws Exception {
-        if (config.secretCode.equals(code)) {
             db.updateUserState(user.tgId(), UserState.NONE, null);
-            sendMainMenu(chatId, user, welcomeText());
-        } else {
-            sendText(chatId, "Неверный код. Попробуйте ещё раз.");
         }
+        sendMainMenu(message.getChatId(), user, welcomeText());
     }
 
     private void handleMenuCallback(CallbackQuery cb, User user) throws Exception {
@@ -375,7 +358,7 @@ public class BotService extends TelegramLongPollingBot {
             }
             case "find:tg" -> {
                 db.updateUserState(user.tgId(), UserState.WAIT_TG_FOR_FIND, null);
-                sendText(chatId, "Введите тег ТГ (например @user или t.me/user).");
+                sendText(chatId, "Введите тег ТГ (например @user) или числовой Telegram ID — он не меняется.");
             }
             case "find:name" -> {
                 db.updateUserState(user.tgId(), UserState.WAIT_NAME_FOR_FIND, null);
@@ -393,7 +376,7 @@ public class BotService extends TelegramLongPollingBot {
             sendText(chatId, "Введите номер телефона для отзыва.");
         } else if (data.equals("review:tg")) {
             db.updateUserState(user.tgId(), UserState.WAIT_TG_FOR_REVIEW, null);
-            sendText(chatId, "Введите тег ТГ (например @user или t.me/user).");
+            sendText(chatId, "Введите тег ТГ (например @user) или числовой Telegram ID — он не меняется.");
         } else if (data.startsWith("review:start:")) {
             int manId = Integer.parseInt(data.split(":")[2]);
             sendRatingButtons(chatId, manId, false);
@@ -423,9 +406,20 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void handleFindByTelegram(User user, long chatId, String username, String tgId, String flow) throws Exception {
+        if (tgId == null && username != null) {
+            tgId = resolveTelegramId(username);
+        }
         Man man = null;
-        if (username != null) man = db.findManByTgUsername(username);
-        if (man == null && tgId != null) man = db.findManByTgId(tgId);
+        if (tgId != null) man = db.findManByTgId(tgId);
+        if (man == null && username != null) man = db.findManByTgUsername(username);
+        if (man != null) {
+            if (username != null && (man.tgUsername() == null || !man.tgUsername().equalsIgnoreCase(username))) {
+                db.updateManTelegram(man.id(), username, null);
+            }
+            if (tgId != null && (man.tgId() == null || !man.tgId().equals(tgId))) {
+                db.updateManTelegram(man.id(), null, tgId);
+            }
+        }
         if (man == null) {
             String payload = null;
             payload = Payload.put(payload, "flow", flow);
@@ -497,11 +491,22 @@ public class BotService extends TelegramLongPollingBot {
                 db.updateReview(existing.id(), rating, text);
                 db.clearUserState(user.tgId());
                 sendTextWithMenuButton(chatId, "Отзыв обновлён.");
+                Review updated = db.getReviewById(existing.id());
+                Man man = db.getManById(manId);
+                if (updated != null && man != null) {
+                    sheets.syncReview(man, updated, user);
+                }
             }
         } else {
             Review review = db.createReview(manId, user.id(), rating, text);
             db.clearUserState(user.tgId());
             sendText(chatId, "Отзыв опубликован.");
+            if (review != null) {
+                Man man = db.getManById(manId);
+                if (man != null) {
+                    sheets.syncReview(man, review, user);
+                }
+            }
         }
         Man man = db.getManById(manId);
         if (man != null) {
@@ -529,6 +534,13 @@ public class BotService extends TelegramLongPollingBot {
         db.updateReview(reviewId, rating, text);
         db.clearUserState(user.tgId());
         sendTextWithMenuButton(chatId, "Отзыв обновлён.");
+        Review updated = db.getReviewById(reviewId);
+        if (updated != null) {
+            Man man = db.getManById(updated.manId());
+            if (man != null) {
+                sheets.syncReview(man, updated, user);
+            }
+        }
     }
 
     private void handleAdminAddPhoto(User user, Message message) throws Exception {
@@ -775,6 +787,13 @@ public class BotService extends TelegramLongPollingBot {
         }
         if (action.startsWith("del")) {
             int reviewId = Integer.parseInt(action.split("-")[1]);
+            Review review = db.getReviewById(reviewId);
+            if (review != null) {
+                Man man = db.getManById(review.manId());
+                if (man != null) {
+                    sheets.markReviewDeleted(man, review, user);
+                }
+            }
             db.deleteReview(reviewId);
             sendText(cb.getMessage().getChatId(), "Отзыв удалён.");
             sendMyReview(cb.getMessage().getChatId(), user, offset, null);
@@ -1803,6 +1822,18 @@ public class BotService extends TelegramLongPollingBot {
             return new String[]{null, text};
         }
         return new String[]{text, null};
+    }
+
+    private String resolveTelegramId(String username) {
+        if (username == null || username.isBlank()) return null;
+        try {
+            GetChat gc = new GetChat();
+            gc.setChatId("@" + username);
+            Chat chat = execute(gc);
+            if (chat != null) return String.valueOf(chat.getId());
+        } catch (Exception ignored) {
+        }
+        return null;
     }
 
     private String emptyToNull(String s) {

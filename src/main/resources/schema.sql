@@ -41,6 +41,24 @@ CREATE TABLE IF NOT EXISTS reviews (
     FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS man_sheets (
+    man_id INTEGER PRIMARY KEY,
+    sheet_id INTEGER NOT NULL,
+    sheet_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(man_id) REFERENCES men(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS review_sheets (
+    review_id INTEGER PRIMARY KEY,
+    man_id INTEGER NOT NULL,
+    sheet_id INTEGER NOT NULL,
+    row_index INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+    FOREIGN KEY(man_id) REFERENCES men(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS access (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
