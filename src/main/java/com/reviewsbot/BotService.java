@@ -335,8 +335,6 @@ public class BotService extends TelegramLongPollingBot {
             sendMainMenu(chatId, user);
         } else if (data.equals("menu:review")) {
             sendFindMethod(chatId, "review");
-        } else if (data.equals("menu:premium")) {
-            sendPremium(chatId, user);
         } else if (data.equals("menu:myreviews")) {
             sendMyReview(chatId, user, 0, null);
         } else if (data.equals("menu:admin")) {
@@ -869,23 +867,8 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void handlePaymentCallback(CallbackQuery cb, User user) throws Exception {
-        String[] parts = cb.getData().split(":");
-        String action = parts[1];
         long chatId = cb.getMessage().getChatId();
-        if (action.equals("week")) {
-            int price = db.getSettingInt("price_week");
-            Payment p = db.createPayment(user.id(), null, "WEEK", price);
-            sendInvoiceForPayment(chatId, p, "Премиум на неделю", "Доступ ко всем карточкам на 7 дней");
-        } else if (action.equals("month")) {
-            int price = db.getSettingInt("price_month");
-            Payment p = db.createPayment(user.id(), null, "MONTH", price);
-            sendInvoiceForPayment(chatId, p, "Премиум на месяц", "Доступ ко всем карточкам на 30 дней");
-        } else if (action.equals("single")) {
-            int manId = Integer.parseInt(parts[2]);
-            int price = db.getSettingInt("price_single");
-            Payment p = db.createPayment(user.id(), manId, "SINGLE", price);
-            sendInvoiceForPayment(chatId, p, "Разовый доступ", "Доступ к выбранной карточке");
-        }
+        sendText(chatId, "Оплата отключена. Доступ открыт всем.");
         answer(cb);
     }
 
@@ -904,12 +887,11 @@ public class BotService extends TelegramLongPollingBot {
                 sendAdminUsers(chatId, offset, cb.getMessage().getMessageId());
             }
             case "grant" -> {
-                db.updateUserState(user.tgId(), UserState.WAIT_ADMIN_GRANT_PREMIUM_USER, null);
-                sendText(chatId, "Введите Telegram ID пользователя.");
+                sendText(chatId, "Премиум отключён.");
             }
             case "stats" -> sendAdminStats(chatId);
             case "prices" -> {
-                sendPriceMenu(chatId);
+                sendText(chatId, "Настройка цен отключена.");
             }
             case "addman" -> {
                 db.updateUserState(user.tgId(), UserState.WAIT_ADMIN_ADD_PHOTO, Payload.put(null, "flow", "admin"));
@@ -948,10 +930,7 @@ public class BotService extends TelegramLongPollingBot {
                 sendAdminMenu(chatId);
             }
             case "price" -> {
-                String key = parts[2];
-                String payload = Payload.put(null, "price_key", key);
-                db.updateUserState(user.tgId(), UserState.WAIT_ADMIN_SET_PRICES, payload);
-                sendText(chatId, "Введите новое значение (только число).");
+                sendText(chatId, "Настройка цен отключена.");
             }
         }
         answer(cb);
@@ -962,14 +941,12 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private void sendMainMenu(long chatId, User user, String text) throws Exception {
-        boolean premium = isPremium(user) || user.isAdmin();
-        String findLabel = premium ? "🔍 Найти мужчину" : "🔒 🔍 Найти мужчину";
-        String reviewLabel = premium ? "📝 Оставить отзыв" : "🔒 📝 Оставить отзыв";
+        String findLabel = "🔍 Найти мужчину";
+        String reviewLabel = "📝 Оставить отзыв";
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(btn(findLabel, "menu:find")));
         rows.add(List.of(btn(reviewLabel, "menu:review")));
-        rows.add(List.of(btn("💎 Премиум", "menu:premium")));
         rows.add(List.of(btn("📜 Мои отзывы", "menu:myreviews")));
         if (user.isAdmin()) {
             rows.add(List.of(btn("⚙️ Админ-панель", "menu:admin")));
@@ -1014,12 +991,6 @@ public class BotService extends TelegramLongPollingBot {
             sendText(chatId, "Карточка недоступна.");
             return;
         }
-        boolean access = hasAccess(user, man);
-        if (!access) {
-            sendPaywall(chatId, man);
-            return;
-        }
-
         String textBody = buildManPreviewText(man, man.isClosed());
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
@@ -1069,10 +1040,6 @@ public class BotService extends TelegramLongPollingBot {
         Man man = db.getManById(manId);
         if (man == null) {
             sendText(chatId, "Карточка не найдена.");
-            return;
-        }
-        if (!hasAccess(user, man)) {
-            sendPaywall(chatId, man);
             return;
         }
         List<Review> list = db.listReviewsForMan(manId, 1, offset);
@@ -1181,9 +1148,7 @@ public class BotService extends TelegramLongPollingBot {
     private void sendAdminMenu(long chatId) throws Exception {
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(btn("👥 Участницы", "admin:users:0")));
-        rows.add(List.of(btn("➕ Выдать премиум", "admin:grant")));
         rows.add(List.of(btn("📊 Статистика", "admin:stats")));
-        rows.add(List.of(btn("💰 Цены", "admin:prices")));
         rows.add(List.of(btn("➕ Добавить мужчину", "admin:addman")));
         rows.add(List.of(btn("📷 Добавить фото", "admin:photo:0")));
         rows.add(List.of(btn("📁 Закрытые карточки", "admin:closed:0")));
@@ -1313,10 +1278,6 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         Man man = list.get(0);
-        if (!hasAccess(user, man)) {
-            sendPaywall(chatId, man);
-            return;
-        }
         int total = db.countMenByName(name);
         boolean hasPrev = offset > 0;
         boolean hasNext = offset + 1 < total;
@@ -1351,10 +1312,6 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
         Man man = list.get(0);
-        if (!hasAccess(user, man)) {
-            sendPaywall(chatId, man);
-            return;
-        }
         int total = db.countMen();
         boolean hasPrev = offset > 0;
         boolean hasNext = offset + 1 < total;
