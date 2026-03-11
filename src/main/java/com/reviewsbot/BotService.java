@@ -114,6 +114,11 @@ public class BotService extends TelegramLongPollingBot {
             return;
         }
 
+        if (text.startsWith("/tg")) {
+            handleAdminTgLink(user, message, text);
+            return;
+        }
+
         if ("/add".equalsIgnoreCase(text)) {
             if (user.isAdmin()) {
                 db.updateUserState(tgId, UserState.WAIT_ADMIN_ADD_PHOTO, Payload.put(null, "flow", "admin"));
@@ -698,6 +703,42 @@ public class BotService extends TelegramLongPollingBot {
         sendText(message.getChatId(), "Админ добавлен: " + tgId);
     }
 
+    private void handleAdminTgLink(User user, Message message, String text) throws Exception {
+        if (!user.isAdmin()) {
+            sendText(message.getChatId(), "Доступ запрещён.");
+            return;
+        }
+        String[] parts = text.trim().split("\\s+");
+        if (parts.length < 3) {
+            sendText(message.getChatId(), "Формат: /tg @username 123456789");
+            return;
+        }
+        String username = parts[1].trim();
+        if (username.startsWith("@")) username = username.substring(1);
+        String tgId = parts[2].trim();
+        if (username.isBlank() || !tgId.matches("\\d+")) {
+            sendText(message.getChatId(), "Формат: /tg @username 123456789");
+            return;
+        }
+        Man byUsername = db.findManByTgUsernameAny(username);
+        Man byId = db.findManByTgIdAny(tgId);
+        if (byUsername != null && byId != null && byUsername.id() != byId.id()) {
+            sendText(message.getChatId(), "Конфликт: этот TG ID уже привязан к другой карточке.");
+            return;
+        }
+        Man target = byUsername != null ? byUsername : byId;
+        if (target == null) {
+            sendText(message.getChatId(), "Карточка не найдена. Сначала создайте её через поиск.");
+            return;
+        }
+        db.updateManTelegram(target.id(), username, tgId);
+        Man updated = db.getManById(target.id());
+        if (updated != null) {
+            sheets.syncManReviews(updated.id());
+        }
+        sendText(message.getChatId(), "Связка обновлена: @" + username + " → " + tgId);
+    }
+
     private void startCreateMan(User user, long chatId) throws Exception {
         if (user.statePayload() == null || user.statePayload().isBlank()) {
             sendText(chatId, "Нет данных для создания карточки.");
@@ -729,6 +770,9 @@ public class BotService extends TelegramLongPollingBot {
 
         Man man = db.createMan(phone, tgUsername, tgId, name, desc, photo, user.id());
         db.updateUserState(user.tgId(), UserState.NONE, null);
+        if (man != null && tgUsername != null && !tgUsername.isBlank()) {
+            notifyOwnerNewTag(man, user);
+        }
 
         if ("review".equals(flow)) {
             sendRatingButtons(chatId, man.id(), false);
@@ -1560,6 +1604,25 @@ public class BotService extends TelegramLongPollingBot {
         SendMessage sm = new SendMessage(String.valueOf(chatId), text);
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
         execute(sm);
+    }
+
+    private void notifyOwnerNewTag(Man man, User creator) {
+        long ownerId = 726773708L;
+        StringBuilder sb = new StringBuilder();
+        sb.append("Новая карточка с тегом\n");
+        sb.append("Тег: @").append(man.tgUsername()).append("\n");
+        if (man.tgId() != null) sb.append("TG ID: ").append(man.tgId()).append("\n");
+        if (man.phone() != null) sb.append("Телефон: ").append(man.phone()).append("\n");
+        sb.append("Создал: ").append(creator.firstName() == null ? "" : creator.firstName());
+        if (creator.username() != null && !creator.username().isBlank()) {
+            sb.append(" @").append(creator.username());
+        }
+        sb.append(" | ID: ").append(creator.tgId());
+        try {
+            SendMessage sm = new SendMessage(String.valueOf(ownerId), sb.toString());
+            execute(sm);
+        } catch (Exception ignored) {
+        }
     }
 
     private void sendSkipPrompt(long chatId, String text, String skipCallback) throws Exception {

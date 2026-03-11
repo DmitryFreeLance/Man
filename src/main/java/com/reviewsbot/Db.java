@@ -339,6 +339,39 @@ public class Db {
         return list;
     }
 
+    public synchronized List<ReviewExport> listReviewsByManForSheets(int manId) throws SQLException {
+        List<ReviewExport> list = new ArrayList<>();
+        String sql = "SELECT r.id AS review_id, r.man_id, r.rating, r.text, r.created_at, " +
+                "m.phone AS man_phone, m.tg_username AS man_tg_username, m.tg_id AS man_tg_id, " +
+                "u.tg_id AS author_tg_id, u.first_name AS author_name, u.tg_username AS author_username " +
+                "FROM reviews r " +
+                "JOIN men m ON r.man_id = m.id " +
+                "JOIN users u ON r.author_id = u.id " +
+                "WHERE r.man_id=? " +
+                "ORDER BY r.id ASC";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setInt(1, manId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    list.add(new ReviewExport(
+                            rs.getInt("review_id"),
+                            rs.getInt("man_id"),
+                            rs.getString("man_phone"),
+                            rs.getString("man_tg_username"),
+                            rs.getString("man_tg_id"),
+                            rs.getInt("rating"),
+                            rs.getString("text"),
+                            TimeUtil.parseIso(rs.getString("created_at")),
+                            rs.getLong("author_tg_id"),
+                            rs.getString("author_name"),
+                            rs.getString("author_username")
+                    ));
+                }
+            }
+        }
+        return list;
+    }
+
     public synchronized Man findManByPhone(String phone) throws SQLException {
         if (phone == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
@@ -363,10 +396,34 @@ public class Db {
         return null;
     }
 
+    public synchronized Man findManByTgUsernameAny(String username) throws SQLException {
+        if (username == null) return null;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM men WHERE lower(tg_username)=lower(?)")) {
+            ps.setString(1, username);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return mapMan(rs);
+            }
+        }
+        return null;
+    }
+
     public synchronized Man findManByTgId(String tgId) throws SQLException {
         if (tgId == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT * FROM men WHERE tg_id=? AND is_closed=0")) {
+            ps.setString(1, tgId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return mapMan(rs);
+            }
+        }
+        return null;
+    }
+
+    public synchronized Man findManByTgIdAny(String tgId) throws SQLException {
+        if (tgId == null) return null;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM men WHERE tg_id=?")) {
             ps.setString(1, tgId);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapMan(rs);

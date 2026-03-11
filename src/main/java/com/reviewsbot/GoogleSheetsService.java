@@ -28,6 +28,7 @@ import java.util.regex.Pattern;
 
 public class GoogleSheetsService {
     private static final String UNIFIED_SHEET_TITLE = "Отзывы";
+    private static final String MIGRATION_KEY = "sheets_unified_migrated_v2";
     private final Db db;
     private final Sheets sheets;
     private final String spreadsheetId;
@@ -98,8 +99,23 @@ public class GoogleSheetsService {
         }
     }
 
+    public void syncManReviews(int manId) {
+        if (!enabled) return;
+        try {
+            SheetRef sheet = getUnifiedSheet();
+            List<Db.ReviewExport> reviews = db.listReviewsByManForSheets(manId);
+            int rowIndex = 0;
+            for (Db.ReviewExport r : reviews) {
+                rowIndex = ensureRowForExport(sheet, r);
+                updateRow(sheet.sheetName(), rowIndex, r, "OK");
+            }
+        } catch (Exception ex) {
+            ex.printStackTrace();
+        }
+    }
+
     private void migrateUnifiedSheetIfNeeded() throws Exception {
-        String flag = db.getSetting("sheets_unified_migrated");
+        String flag = db.getSetting(MIGRATION_KEY);
         if ("1".equals(flag)) return;
         SheetRef sheet = getUnifiedSheet();
         sheets.spreadsheets().values()
@@ -131,11 +147,11 @@ public class GoogleSheetsService {
 
         ValueRange body = new ValueRange().setValues(values);
         sheets.spreadsheets().values()
-                .update(spreadsheetId, sheet.sheetName() + "!A1:I" + values.size(), body)
+                .update(spreadsheetId, sheet.sheetName() + "!A1:J" + values.size(), body)
                 .setValueInputOption("RAW")
                 .execute();
 
-        db.setSetting("sheets_unified_migrated", "1");
+        db.setSetting(MIGRATION_KEY, "1");
     }
 
     private SheetRef getUnifiedSheet() throws Exception {
@@ -165,13 +181,13 @@ public class GoogleSheetsService {
     private void writeHeader(String sheetName) throws Exception {
         ValueRange body = new ValueRange().setValues(List.of(headerRow()));
         sheets.spreadsheets().values()
-                .update(spreadsheetId, sheetName + "!A1:I1", body)
+                .update(spreadsheetId, sheetName + "!A1:J1", body)
                 .setValueInputOption("RAW")
                 .execute();
     }
 
     private List<Object> headerRow() {
-        return List.of("Review ID", "Мужчина", "Дата", "Оценка", "Текст", "Автор ID", "Автор", "Тег", "Статус");
+        return List.of("Review ID", "Мужчина", "Мужчина TG ID", "Дата", "Оценка", "Текст", "Автор ID", "Автор", "Тег", "Статус");
     }
 
     private int ensureReviewRow(SheetRef sheet, Db.Man man, Db.Review review, Db.User author) throws Exception {
@@ -180,7 +196,7 @@ public class GoogleSheetsService {
         List<Object> row = buildRow(man, review, author, "OK");
         ValueRange body = new ValueRange().setValues(List.of(row));
         AppendValuesResponse resp = sheets.spreadsheets().values()
-                .append(spreadsheetId, sheet.sheetName() + "!A:I", body)
+                .append(spreadsheetId, sheet.sheetName() + "!A:J", body)
                 .setValueInputOption("RAW")
                 .setInsertDataOption("INSERT_ROWS")
                 .setIncludeValuesInResponse(true)
@@ -195,10 +211,67 @@ public class GoogleSheetsService {
         return rowIndex;
     }
 
+    private int ensureRowForExport(SheetRef sheet, Db.ReviewExport r) throws Exception {
+        Db.ReviewSheet existing = db.getReviewSheet(r.reviewId());
+        if (existing != null) return existing.rowIndex();
+        List<Object> row = buildRow(
+                r.manPhone(),
+                r.manTgUsername(),
+                r.manTgId(),
+                r.manId(),
+                r.reviewId(),
+                r.createdAt(),
+                r.rating(),
+                r.text(),
+                r.authorTgId(),
+                r.authorName(),
+                r.authorUsername(),
+                "OK"
+        );
+        ValueRange body = new ValueRange().setValues(List.of(row));
+        AppendValuesResponse resp = sheets.spreadsheets().values()
+                .append(spreadsheetId, sheet.sheetName() + "!A:J", body)
+                .setValueInputOption("RAW")
+                .setInsertDataOption("INSERT_ROWS")
+                .setIncludeValuesInResponse(true)
+                .execute();
+        String range = resp.getUpdates() != null ? resp.getUpdates().getUpdatedRange() : null;
+        int rowIndex = extractRowIndex(range);
+        if (rowIndex <= 0) {
+            int updatedRows = resp.getUpdates() != null ? resp.getUpdates().getUpdatedRows() : 0;
+            rowIndex = Math.max(2, updatedRows + 1);
+        }
+        db.upsertReviewSheet(r.reviewId(), r.manId(), sheet.sheetId(), rowIndex);
+        return rowIndex;
+    }
+
     private void updateRow(String sheetName, int rowIndex, Db.Man man, Db.Review review, Db.User author, String status) throws Exception {
         List<Object> row = buildRow(man, review, author, status);
         ValueRange body = new ValueRange().setValues(List.of(row));
-        String range = sheetName + "!A" + rowIndex + ":I" + rowIndex;
+        String range = sheetName + "!A" + rowIndex + ":J" + rowIndex;
+        sheets.spreadsheets().values()
+                .update(spreadsheetId, range, body)
+                .setValueInputOption("RAW")
+                .execute();
+    }
+
+    private void updateRow(String sheetName, int rowIndex, Db.ReviewExport r, String status) throws Exception {
+        List<Object> row = buildRow(
+                r.manPhone(),
+                r.manTgUsername(),
+                r.manTgId(),
+                r.manId(),
+                r.reviewId(),
+                r.createdAt(),
+                r.rating(),
+                r.text(),
+                r.authorTgId(),
+                r.authorName(),
+                r.authorUsername(),
+                status
+        );
+        ValueRange body = new ValueRange().setValues(List.of(row));
+        String range = sheetName + "!A" + rowIndex + ":J" + rowIndex;
         sheets.spreadsheets().values()
                 .update(spreadsheetId, range, body)
                 .setValueInputOption("RAW")
@@ -233,6 +306,7 @@ public class GoogleSheetsService {
         return List.of(
                 reviewId,
                 manRef,
+                manTgId == null ? "" : manTgId,
                 date,
                 rating,
                 safeText,
