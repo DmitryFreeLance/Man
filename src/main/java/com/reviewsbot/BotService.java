@@ -1008,11 +1008,11 @@ public class BotService extends TelegramLongPollingBot {
     private void sendFindMethod(long chatId, String flow) throws Exception {
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         if ("find".equals(flow)) {
-            rows.add(List.of(btn("🔎 Поиск по номеру", "find:phone")));
+            rows.add(List.of(btn("🔎 Ввести номер", "find:phone")));
             rows.add(List.of(btn("✍️ Ввести тег ТГ", "find:tg")));
             rows.add(List.of(btn("📋 Все мужчины", "menlist:find:0")));
         } else {
-            rows.add(List.of(btn("🔎 Поиск по номеру", "review:phone")));
+            rows.add(List.of(btn("🔎 Ввести номер", "review:phone")));
             rows.add(List.of(btn("✍️ Ввести тег ТГ", "review:tg")));
             rows.add(List.of(btn("📋 Все мужчины", "menlist:review:0")));
         }
