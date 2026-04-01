@@ -1010,11 +1010,9 @@ public class BotService extends TelegramLongPollingBot {
         if ("find".equals(flow)) {
             rows.add(List.of(btn("🔎 Ввести номер", "find:phone")));
             rows.add(List.of(btn("✍️ Ввести тег ТГ", "find:tg")));
-            rows.add(List.of(btn("📋 Все мужчины", "menlist:find:0")));
         } else {
             rows.add(List.of(btn("🔎 Ввести номер", "review:phone")));
             rows.add(List.of(btn("✍️ Ввести тег ТГ", "review:tg")));
-            rows.add(List.of(btn("📋 Все мужчины", "menlist:review:0")));
         }
         SendMessage sm = new SendMessage(String.valueOf(chatId), "Как будем искать?");
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
