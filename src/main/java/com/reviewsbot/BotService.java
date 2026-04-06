@@ -37,6 +37,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -45,6 +46,11 @@ import java.io.File;
 import java.io.FileOutputStream;
 
 public class BotService extends TelegramLongPollingBot {
+    private static final int TELEGRAM_MESSAGE_LIMIT_SAFE = 3500;
+    private record TgLinkCommand(int index, String username, String tgId) {}
+    private record TgLinkResult(String message, Integer syncedManId) {}
+    private record TgLinkParseResult(List<TgLinkCommand> commands, List<String> parseErrors) {}
+
     private final BotConfig config;
     private final Db db;
     private final GoogleSheetsService sheets;
@@ -708,35 +714,137 @@ public class BotService extends TelegramLongPollingBot {
             sendText(message.getChatId(), "Доступ запрещён.");
             return;
         }
-        String[] parts = text.trim().split("\\s+");
-        if (parts.length < 3) {
+        TgLinkParseResult parsed = parseTgLinkCommands(text);
+        if (parsed.commands().isEmpty()) {
             sendText(message.getChatId(), "Формат: /tg @username 123456789");
             return;
         }
-        String username = parts[1].trim();
-        if (username.startsWith("@")) username = username.substring(1);
-        String tgId = parts[2].trim();
-        if (username.isBlank() || !tgId.matches("\\d+")) {
-            sendText(message.getChatId(), "Формат: /tg @username 123456789");
+
+        if (parsed.commands().size() == 1 && parsed.parseErrors().isEmpty()) {
+            TgLinkResult result = applySingleTgLink(parsed.commands().get(0));
+            if (result.syncedManId() != null) {
+                sheets.syncManReviews(result.syncedManId());
+            }
+            sendText(message.getChatId(), result.message());
             return;
         }
-        Man byUsername = db.findManByTgUsernameAny(username);
-        Man byId = db.findManByTgIdAny(tgId);
+
+        int ok = 0;
+        List<String> errors = new ArrayList<>(parsed.parseErrors());
+        LinkedHashSet<Integer> manIdsToSync = new LinkedHashSet<>();
+
+        for (TgLinkCommand cmd : parsed.commands()) {
+            TgLinkResult result = applySingleTgLink(cmd);
+            if (result.syncedManId() != null) {
+                manIdsToSync.add(result.syncedManId());
+                ok++;
+            } else {
+                errors.add("Команда #" + cmd.index() + ": " + result.message());
+            }
+        }
+
+        for (Integer manId : manIdsToSync) {
+            sheets.syncManReviews(manId);
+        }
+
+        int total = parsed.commands().size() + parsed.parseErrors().size();
+        StringBuilder sb = new StringBuilder();
+        sb.append("Готово.\n")
+                .append("Всего команд: ").append(total).append("\n")
+                .append("Успешно: ").append(ok).append("\n")
+                .append("Ошибок: ").append(errors.size());
+
+        if (!errors.isEmpty()) {
+            sb.append("\n\nОшибки:\n");
+            for (String err : errors) {
+                sb.append("• ").append(err).append("\n");
+            }
+        }
+
+        sendTextChunked(message.getChatId(), sb.toString().trim());
+    }
+
+    private TgLinkResult applySingleTgLink(TgLinkCommand cmd) throws Exception {
+        Man byUsername = db.findManByTgUsernameAny(cmd.username());
+        Man byId = db.findManByTgIdAny(cmd.tgId());
         if (byUsername != null && byId != null && byUsername.id() != byId.id()) {
-            sendText(message.getChatId(), "Конфликт: этот TG ID уже привязан к другой карточке.");
-            return;
+            return new TgLinkResult("Конфликт: этот TG ID уже привязан к другой карточке.", null);
         }
         Man target = byUsername != null ? byUsername : byId;
         if (target == null) {
-            sendText(message.getChatId(), "Карточка не найдена. Сначала создайте её через поиск.");
+            return new TgLinkResult("Карточка не найдена. Сначала создайте её через поиск.", null);
+        }
+        db.updateManTelegram(target.id(), cmd.username(), cmd.tgId());
+        return new TgLinkResult("Связка обновлена: @" + cmd.username() + " → " + cmd.tgId(), target.id());
+    }
+
+    private TgLinkParseResult parseTgLinkCommands(String text) {
+        if (text == null || text.isBlank()) {
+            return new TgLinkParseResult(List.of(), List.of());
+        }
+
+        String normalized = text.replace("\r\n", "\n").replace('\r', '\n');
+        normalized = normalized.replaceAll("(?i)/tg\\s+", "\n/tg ");
+
+        List<TgLinkCommand> commands = new ArrayList<>();
+        List<String> parseErrors = new ArrayList<>();
+        int index = 0;
+
+        for (String rawLine : normalized.split("\n")) {
+            String line = rawLine.trim();
+            if (line.isEmpty()) continue;
+
+            index++;
+            if (line.regionMatches(true, 0, "/tg", 0, 3)) {
+                line = line.substring(3).trim();
+            }
+
+            String[] parts = line.split("\\s+");
+            if (parts.length < 2) {
+                parseErrors.add("Команда #" + index + ": формат должен быть /tg @username 123456789");
+                continue;
+            }
+
+            String username = parts[0].trim();
+            if (username.startsWith("@")) username = username.substring(1);
+            String tgId = parts[1].trim();
+
+            if (username.isBlank() || !tgId.matches("\\d+")) {
+                parseErrors.add("Команда #" + index + ": формат должен быть /tg @username 123456789");
+                continue;
+            }
+
+            commands.add(new TgLinkCommand(index, username, tgId));
+        }
+
+        return new TgLinkParseResult(commands, parseErrors);
+    }
+
+    private void sendTextChunked(long chatId, String text) throws Exception {
+        if (text == null || text.isBlank()) return;
+        if (text.length() <= TELEGRAM_MESSAGE_LIMIT_SAFE) {
+            sendText(chatId, text);
             return;
         }
-        db.updateManTelegram(target.id(), username, tgId);
-        Man updated = db.getManById(target.id());
-        if (updated != null) {
-            sheets.syncManReviews(updated.id());
+
+        int start = 0;
+        while (start < text.length()) {
+            int end = Math.min(start + TELEGRAM_MESSAGE_LIMIT_SAFE, text.length());
+            if (end < text.length()) {
+                int breakPos = text.lastIndexOf('\n', end);
+                if (breakPos > start + 200) {
+                    end = breakPos;
+                }
+            }
+            String chunk = text.substring(start, end).trim();
+            if (!chunk.isEmpty()) {
+                sendText(chatId, chunk);
+            }
+            start = end;
+            while (start < text.length() && Character.isWhitespace(text.charAt(start))) {
+                start++;
+            }
         }
-        sendText(message.getChatId(), "Связка обновлена: @" + username + " → " + tgId);
     }
 
     private void startCreateMan(User user, long chatId) throws Exception {
