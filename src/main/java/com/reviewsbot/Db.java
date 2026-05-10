@@ -107,6 +107,7 @@ public class Db {
         ensureSetting("price_week", String.valueOf(config.defaultPriceWeek));
         ensureSetting("price_month", String.valueOf(config.defaultPriceMonth));
         ensureSetting("price_single", String.valueOf(config.defaultPriceSingle));
+        ensureSetting("review_lookup_views", "0");
     }
 
     private void ensureReviewStatusColumn() throws SQLException {
@@ -284,6 +285,34 @@ public class Db {
             }
         }
         return 0;
+    }
+
+    public synchronized long getSettingLong(String key) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT value FROM settings WHERE key=?")) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    String value = rs.getString(1);
+                    if (value == null || value.isBlank()) {
+                        return 0L;
+                    }
+                    try {
+                        return Long.parseLong(value);
+                    } catch (NumberFormatException ignored) {
+                        return 0L;
+                    }
+                }
+            }
+        }
+        return 0L;
+    }
+
+    public synchronized long incrementSettingLong(String key, long delta) throws SQLException {
+        long current = getSettingLong(key);
+        long updated = current + delta;
+        setSetting(key, String.valueOf(updated));
+        return updated;
     }
 
     public synchronized String getSetting(String key) throws SQLException {

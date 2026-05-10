@@ -47,6 +47,7 @@ import java.io.FileOutputStream;
 
 public class BotService extends TelegramLongPollingBot {
     private static final int TELEGRAM_MESSAGE_LIMIT_SAFE = 3500;
+    private static final String REVIEW_LOOKUP_VIEWS_KEY = "review_lookup_views";
     private record TgLinkCommand(int index, String username, String tgId) {}
     private record TgLinkResult(String message, Integer syncedManId) {}
     private record TgLinkParseResult(List<TgLinkCommand> commands, List<String> parseErrors) {}
@@ -301,7 +302,7 @@ public class BotService extends TelegramLongPollingBot {
             int manId = Integer.parseInt(data.split(":")[2]);
             Man man = db.getManById(manId);
             if (man != null) {
-                sendManCard(cb.getMessage().getChatId(), user, man, true);
+                sendManCard(cb.getMessage().getChatId(), user, man, true, false);
             } else {
                 sendText(cb.getMessage().getChatId(), "Карточка не найдена.");
             }
@@ -334,7 +335,8 @@ public class BotService extends TelegramLongPollingBot {
         if (user.state() == UserState.WAIT_SECRET) {
             db.updateUserState(user.tgId(), UserState.NONE, null);
         }
-        sendMainMenu(message.getChatId(), user, welcomeText());
+        long reviewLookupViews = db.getSettingLong(REVIEW_LOOKUP_VIEWS_KEY);
+        sendMainMenu(message.getChatId(), user, welcomeText(reviewLookupViews));
     }
 
     private void handleMenuCallback(CallbackQuery cb, User user) throws Exception {
@@ -409,7 +411,7 @@ public class BotService extends TelegramLongPollingBot {
             if ("review".equals(flow)) {
                 sendRatingButtons(chatId, man.id(), false);
             } else {
-                sendManCard(chatId, user, man, true);
+                sendManCard(chatId, user, man, true, true);
             }
         }
     }
@@ -440,7 +442,7 @@ public class BotService extends TelegramLongPollingBot {
             if ("review".equals(flow)) {
                 sendRatingButtons(chatId, man.id(), false);
             } else {
-                sendManCard(chatId, user, man, true);
+                sendManCard(chatId, user, man, true, true);
             }
         }
     }
@@ -519,7 +521,7 @@ public class BotService extends TelegramLongPollingBot {
         }
         Man man = db.getManById(manId);
         if (man != null) {
-            sendManCard(chatId, user, man, true);
+            sendManCard(chatId, user, man, true, false);
         }
     }
 
@@ -885,7 +887,7 @@ public class BotService extends TelegramLongPollingBot {
         if ("review".equals(flow)) {
             sendRatingButtons(chatId, man.id(), false);
         } else {
-            sendManCard(chatId, user, man, true);
+            sendManCard(chatId, user, man, true, false);
         }
     }
 
@@ -917,6 +919,10 @@ public class BotService extends TelegramLongPollingBot {
         String[] parts = cb.getData().split(":");
         int manId = Integer.parseInt(parts[1]);
         int offset = Integer.parseInt(parts[2]);
+        boolean trackedLookup = parts.length > 3 && "lookup".equals(parts[3]);
+        if (offset == 0 && trackedLookup) {
+            db.incrementSettingLong(REVIEW_LOOKUP_VIEWS_KEY, 1);
+        }
         sendReviewsPage(cb.getMessage().getChatId(), user, manId, offset, cb.getMessage().getMessageId());
         answer(cb);
     }
@@ -1107,10 +1113,11 @@ public class BotService extends TelegramLongPollingBot {
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
         execute(sm);
     }
-    private String welcomeText() {
+    private String welcomeText(long reviewLookupViews) {
         return "Добро пожаловать! Здесь ты можешь оставить отзыв о мужчине, " +
                 "посмотреть отзывы других участниц и безопасно выбрать премиум-доступ. " +
-                "Мы сохраняем отзывы и помогаем сделать информированный выбор.";
+                "Мы сохраняем отзывы и помогаем сделать информированный выбор." +
+                "\n\nБотом пользовались " + reviewLookupViews + " раз 🔥";
     }
 
     private void sendFindMethod(long chatId, String flow) throws Exception {
@@ -1136,7 +1143,7 @@ public class BotService extends TelegramLongPollingBot {
         execute(sm);
     }
 
-    private void sendManCard(long chatId, User user, Man man, boolean includeReviews) throws Exception {
+    private void sendManCard(long chatId, User user, Man man, boolean includeReviews, boolean trackReviewLookup) throws Exception {
         if (man.isClosed() && !user.isAdmin()) {
             sendText(chatId, "Карточка недоступна.");
             return;
@@ -1145,7 +1152,10 @@ public class BotService extends TelegramLongPollingBot {
 
         List<List<InlineKeyboardButton>> rows = new ArrayList<>();
         rows.add(List.of(btn("📝 Оставить отзыв", "review:start:" + man.id())));
-        rows.add(List.of(btn("📄 Посмотреть отзывы", "reviews:" + man.id() + ":0")));
+        if (includeReviews) {
+            String reviewsCallback = "reviews:" + man.id() + ":0" + (trackReviewLookup ? ":lookup" : "");
+            rows.add(List.of(btn("📄 Посмотреть отзывы", reviewsCallback)));
+        }
         if (user.isAdmin()) {
             if (man.isClosed()) {
                 rows.add(List.of(btn("♻️ Восстановить", "admin:restore:" + man.id())));
