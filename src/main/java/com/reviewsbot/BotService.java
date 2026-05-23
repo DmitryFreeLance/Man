@@ -342,6 +342,9 @@ public class BotService extends TelegramLongPollingBot {
     private void handleMenuCallback(CallbackQuery cb, User user) throws Exception {
         String data = cb.getData();
         long chatId = cb.getMessage().getChatId();
+        if (isMainMenuAction(data)) {
+            db.incrementSettingLong(REVIEW_LOOKUP_VIEWS_KEY, 1);
+        }
         if (data.equals("menu:find")) {
             sendFindMethod(chatId, "find");
         } else if (data.equals("menu:main")) {
@@ -408,7 +411,6 @@ public class BotService extends TelegramLongPollingBot {
             db.updateUserState(user.tgId(), UserState.NONE, payload);
             sendCreatePrompt(chatId);
         } else {
-            db.incrementSettingLong(REVIEW_LOOKUP_VIEWS_KEY, 1);
             if ("review".equals(flow)) {
                 sendRatingButtons(chatId, man.id(), false);
             } else {
@@ -440,7 +442,6 @@ public class BotService extends TelegramLongPollingBot {
             db.updateUserState(user.tgId(), UserState.NONE, payload);
             sendCreatePrompt(chatId);
         } else {
-            db.incrementSettingLong(REVIEW_LOOKUP_VIEWS_KEY, 1);
             if ("review".equals(flow)) {
                 sendRatingButtons(chatId, man.id(), false);
             } else {
@@ -1116,6 +1117,13 @@ public class BotService extends TelegramLongPollingBot {
                 "посмотреть отзывы других участниц и безопасно выбрать премиум-доступ. " +
                 "Мы сохраняем отзывы и помогаем сделать информированный выбор." +
                 "\n\nБотом пользовались " + reviewLookupViews + " раз 🔥";
+    }
+
+    private boolean isMainMenuAction(String data) {
+        return "menu:find".equals(data)
+                || "menu:review".equals(data)
+                || "menu:myreviews".equals(data)
+                || "menu:admin".equals(data);
     }
 
     private void sendFindMethod(long chatId, String flow) throws Exception {

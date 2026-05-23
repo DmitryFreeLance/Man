@@ -107,7 +107,7 @@ public class Db {
         ensureSetting("price_week", String.valueOf(config.defaultPriceWeek));
         ensureSetting("price_month", String.valueOf(config.defaultPriceMonth));
         ensureSetting("price_single", String.valueOf(config.defaultPriceSingle));
-        ensureSetting("review_lookup_views", "0");
+        ensureSetting("review_lookup_views", "3125");
     }
 
     private void ensureReviewStatusColumn() throws SQLException {
