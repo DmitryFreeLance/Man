@@ -23,6 +23,10 @@ public class BotConfig {
 
     public final String sheetsCredentialsPath;
     public final String sheetsSpreadsheetId;
+    public final boolean tgAutofillEnabled;
+    public final int tgAutofillIntervalMinutes;
+    public final String tgAutofillBackfillFromUsername;
+    public final String tgAutofillBackfillToUsername;
 
     public BotConfig() {
         this.botToken = envOrThrow("BOT_TOKEN");
@@ -41,6 +45,10 @@ public class BotConfig {
 
         this.sheetsCredentialsPath = envOrDefault("GOOGLE_SHEETS_CREDENTIALS", "");
         this.sheetsSpreadsheetId = envOrDefault("GOOGLE_SHEETS_SPREADSHEET_ID", "");
+        this.tgAutofillEnabled = Boolean.parseBoolean(envOrDefault("TG_AUTOFILL_ENABLED", "true"));
+        this.tgAutofillIntervalMinutes = Math.max(1, Integer.parseInt(envOrDefault("TG_AUTOFILL_INTERVAL_MINUTES", "5")));
+        this.tgAutofillBackfillFromUsername = envOrDefault("TG_AUTOFILL_BACKFILL_FROM_USERNAME", "Marik_mOnitor");
+        this.tgAutofillBackfillToUsername = envOrDefault("TG_AUTOFILL_BACKFILL_TO_USERNAME", "Umarov_od1");
 
         String admins = envOrDefault("ADMIN_IDS", "");
         if (admins.isBlank()) {

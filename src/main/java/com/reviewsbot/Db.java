@@ -472,6 +472,47 @@ public class Db {
         return null;
     }
 
+    public synchronized Man findNextManForTelegramAutofill(int existingMaxManId, Integer backfillFromManId, Integer backfillToManId) throws SQLException {
+        boolean hasBackfillRange = backfillFromManId != null && backfillToManId != null;
+        String sql = "SELECT m.* FROM men m " +
+                "WHERE EXISTS (SELECT 1 FROM reviews r WHERE r.man_id = m.id) " +
+                "AND m.tg_username IS NOT NULL AND trim(m.tg_username) <> '' " +
+                "AND (m.tg_id IS NULL OR trim(m.tg_id) = '') " +
+                "AND (" +
+                "m.id > ? " +
+                (hasBackfillRange ? "OR (m.id >= ? AND m.id <= ? AND m.id <= ?)" : "") +
+                ") " +
+                "ORDER BY CASE " +
+                (hasBackfillRange ? "WHEN m.id >= ? AND m.id <= ? AND m.id <= ? THEN 0 " : "") +
+                "ELSE 1 END ASC, m.id ASC " +
+                "LIMIT 1";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            int idx = 1;
+            ps.setInt(idx++, existingMaxManId);
+            if (hasBackfillRange) {
+                ps.setInt(idx++, Math.min(backfillFromManId, backfillToManId));
+                ps.setInt(idx++, Math.max(backfillFromManId, backfillToManId));
+                ps.setInt(idx++, existingMaxManId);
+                ps.setInt(idx++, Math.min(backfillFromManId, backfillToManId));
+                ps.setInt(idx++, Math.max(backfillFromManId, backfillToManId));
+                ps.setInt(idx, existingMaxManId);
+            }
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return mapMan(rs);
+            }
+        }
+        return null;
+    }
+
+    public synchronized int getMaxManId() throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("SELECT COALESCE(MAX(id), 0) FROM men")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return rs.getInt(1);
+            }
+        }
+        return 0;
+    }
+
     public synchronized Man createMan(String phone, String tgUsername, String tgId,
                                       String name, String description, String photoFileId, Integer createdBy) throws SQLException {
         try (PreparedStatement ps = conn.prepareStatement(

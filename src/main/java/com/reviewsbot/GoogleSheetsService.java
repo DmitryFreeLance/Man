@@ -301,12 +301,15 @@ public class GoogleSheetsService {
         String date = createdAt == null ? "" : dateFmt.format(createdAt);
         String authorTag = authorUsername == null || authorUsername.isBlank() ? "" : ("@" + authorUsername);
         String manRef = formatManRef(manPhone, manTgUsername, manTgId, manId);
+        String sheetTgId = (manTgUsername == null || manTgUsername.isBlank() || manTgId == null || manTgId.isBlank())
+                ? ""
+                : manTgId;
         String safeText = text == null ? "" : text;
         String safeName = authorName == null ? "" : authorName;
         return List.of(
                 reviewId,
                 manRef,
-                manTgId == null ? "" : manTgId,
+                sheetTgId,
                 date,
                 rating,
                 safeText,

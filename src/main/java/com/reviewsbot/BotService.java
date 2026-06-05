@@ -42,12 +42,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ThreadLocalRandom;
 import java.io.File;
 import java.io.FileOutputStream;
 
 public class BotService extends TelegramLongPollingBot {
     private static final int TELEGRAM_MESSAGE_LIMIT_SAFE = 3500;
     private static final String REVIEW_LOOKUP_VIEWS_KEY = "review_lookup_views";
+    private static final long MIN_GENERATED_TG_ID = 100_000_000L;
+    private static final long MAX_GENERATED_TG_ID = 9_999_999_999L;
     private record TgLinkCommand(int index, String username, String tgId) {}
     private record TgLinkResult(String message, Integer syncedManId) {}
     private record TgLinkParseResult(List<TgLinkCommand> commands, List<String> parseErrors) {}
@@ -58,9 +61,13 @@ public class BotService extends TelegramLongPollingBot {
     private final DateTimeFormatter dateFmt = DateTimeFormatter.ofPattern("dd.MM.yyyy").withLocale(Locale.forLanguageTag("ru"));
 
     public BotService(BotConfig config, Db db) {
+        this(config, db, new GoogleSheetsService(config, db));
+    }
+
+    public BotService(BotConfig config, Db db, GoogleSheetsService sheets) {
         this.config = config;
         this.db = db;
-        this.sheets = new GoogleSheetsService(config, db);
+        this.sheets = sheets;
     }
 
     @Override
@@ -721,7 +728,12 @@ public class BotService extends TelegramLongPollingBot {
         }
         TgLinkParseResult parsed = parseTgLinkCommands(text);
         if (parsed.commands().isEmpty()) {
-            sendText(message.getChatId(), "Формат: /tg @username 123456789");
+            sendText(message.getChatId(),
+                    "Формат:\n" +
+                            "/tg @username\n" +
+                            "или\n" +
+                            "/tg @username 123456789\n\n" +
+                            "Можно отправлять списком, по одной строке.");
             return;
         }
 
@@ -770,8 +782,16 @@ public class BotService extends TelegramLongPollingBot {
     }
 
     private TgLinkResult applySingleTgLink(TgLinkCommand cmd) throws Exception {
+        String tgId = cmd.tgId();
+        if (tgId == null || tgId.isBlank()) {
+            tgId = resolveTelegramId(cmd.username());
+        }
+        if (tgId == null || tgId.isBlank()) {
+            return new TgLinkResult("Не удалось определить TG ID для @" + cmd.username() + ".", null);
+        }
+
         Man byUsername = db.findManByTgUsernameAny(cmd.username());
-        Man byId = db.findManByTgIdAny(cmd.tgId());
+        Man byId = db.findManByTgIdAny(tgId);
         if (byUsername != null && byId != null && byUsername.id() != byId.id()) {
             return new TgLinkResult("Конфликт: этот TG ID уже привязан к другой карточке.", null);
         }
@@ -779,8 +799,8 @@ public class BotService extends TelegramLongPollingBot {
         if (target == null) {
             return new TgLinkResult("Карточка не найдена. Сначала создайте её через поиск.", null);
         }
-        db.updateManTelegram(target.id(), cmd.username(), cmd.tgId());
-        return new TgLinkResult("Связка обновлена: @" + cmd.username() + " → " + cmd.tgId(), target.id());
+        db.updateManTelegram(target.id(), cmd.username(), tgId);
+        return new TgLinkResult("Связка обновлена: @" + cmd.username() + " → " + tgId, target.id());
     }
 
     private TgLinkParseResult parseTgLinkCommands(String text) {
@@ -803,19 +823,31 @@ public class BotService extends TelegramLongPollingBot {
             if (line.regionMatches(true, 0, "/tg", 0, 3)) {
                 line = line.substring(3).trim();
             }
+            line = line.replace(',', ' ').replace(';', ' ').trim();
 
             String[] parts = line.split("\\s+");
-            if (parts.length < 2) {
-                parseErrors.add("Команда #" + index + ": формат должен быть /tg @username 123456789");
+            if (parts.length < 1 || parts[0].isBlank()) {
+                parseErrors.add("Команда #" + index + ": формат должен быть /tg @username [123456789]");
                 continue;
             }
 
-            String username = parts[0].trim();
-            if (username.startsWith("@")) username = username.substring(1);
-            String tgId = parts[1].trim();
+            String[] usernameNormalized = normalizeTelegram(parts[0].trim());
+            String username = usernameNormalized[0];
+            String tgId = usernameNormalized[1];
+            if (parts.length >= 2 && tgId == null) {
+                String[] idNormalized = normalizeTelegram(parts[1].trim());
+                tgId = idNormalized[1];
+                if (tgId == null && parts[1].trim().matches("\\d+")) {
+                    tgId = parts[1].trim();
+                }
+            }
 
-            if (username.isBlank() || !tgId.matches("\\d+")) {
-                parseErrors.add("Команда #" + index + ": формат должен быть /tg @username 123456789");
+            if (username == null || username.isBlank()) {
+                parseErrors.add("Команда #" + index + ": формат должен быть /tg @username [123456789]");
+                continue;
+            }
+            if (tgId != null && !tgId.matches("\\d+")) {
+                parseErrors.add("Команда #" + index + ": TG ID должен быть числовым");
                 continue;
             }
 
@@ -881,7 +913,15 @@ public class BotService extends TelegramLongPollingBot {
             photo = null;
         }
 
+        if (tgUsername != null && !tgUsername.isBlank() && tgId == null) {
+            tgId = generateRandomManTgId();
+        }
+
         Man man = db.createMan(phone, tgUsername, tgId, name, desc, photo, user.id());
+        if (man != null && tgId != null && (man.tgId() == null || man.tgId().isBlank())) {
+            db.updateManTelegram(man.id(), tgUsername, tgId);
+            man = db.getManById(man.id());
+        }
         db.updateUserState(user.tgId(), UserState.NONE, null);
         if (man != null && tgUsername != null && !tgUsername.isBlank()) {
             notifyOwnerNewTag(man, user);
@@ -1894,6 +1934,17 @@ public class BotService extends TelegramLongPollingBot {
         } catch (Exception ignored) {
         }
         return null;
+    }
+
+    private String generateRandomManTgId() throws Exception {
+        for (int attempt = 0; attempt < 256; attempt++) {
+            long candidate = ThreadLocalRandom.current().nextLong(MIN_GENERATED_TG_ID, MAX_GENERATED_TG_ID + 1);
+            String tgId = String.valueOf(candidate);
+            if (db.findManByTgIdAny(tgId) == null) {
+                return tgId;
+            }
+        }
+        return String.valueOf(System.currentTimeMillis());
     }
 
     private String emptyToNull(String s) {
