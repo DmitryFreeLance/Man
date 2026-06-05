@@ -413,6 +413,18 @@ public class Db {
         return null;
     }
 
+    public synchronized Man findManByPhoneAny(String phone) throws SQLException {
+        if (phone == null) return null;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT * FROM men WHERE phone=?")) {
+            ps.setString(1, phone);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) return mapMan(rs);
+            }
+        }
+        return null;
+    }
+
     public synchronized Man findManByTgUsername(String username) throws SQLException {
         if (username == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
@@ -533,9 +545,9 @@ public class Db {
             ps.executeUpdate();
         } catch (SQLException ex) {
             Man m = null;
-            if (phone != null) m = findManByPhone(phone);
-            if (m == null && tgUsername != null) m = findManByTgUsername(tgUsername);
-            if (m == null && tgId != null) m = findManByTgId(tgId);
+            if (phone != null) m = findManByPhoneAny(phone);
+            if (m == null && tgUsername != null) m = findManByTgUsernameAny(tgUsername);
+            if (m == null && tgId != null) m = findManByTgIdAny(tgId);
             if (m != null) return m;
             throw ex;
         }

@@ -277,6 +277,7 @@ public class BotService extends TelegramLongPollingBot {
 
         if (data.startsWith("create:man")) {
             startCreateMan(user, cb.getMessage().getChatId());
+            answer(cb);
             return;
         }
 
@@ -412,6 +413,10 @@ public class BotService extends TelegramLongPollingBot {
         }
         Man man = db.findManByPhone(phone);
         if (man == null) {
+            Man existingAny = db.findManByPhoneAny(phone);
+            if (handleClosedDuplicate(user, chatId, existingAny)) {
+                return;
+            }
             String payload = null;
             payload = Payload.put(payload, "flow", flow);
             payload = Payload.put(payload, "phone", phone);
@@ -442,6 +447,12 @@ public class BotService extends TelegramLongPollingBot {
             }
         }
         if (man == null) {
+            Man existingAny = null;
+            if (tgId != null) existingAny = db.findManByTgIdAny(tgId);
+            if (existingAny == null && username != null) existingAny = db.findManByTgUsernameAny(username);
+            if (handleClosedDuplicate(user, chatId, existingAny)) {
+                return;
+            }
             String payload = null;
             payload = Payload.put(payload, "flow", flow);
             if (username != null) payload = Payload.put(payload, "tg_username", username);
@@ -918,6 +929,10 @@ public class BotService extends TelegramLongPollingBot {
         }
 
         Man man = db.createMan(phone, tgUsername, tgId, name, desc, photo, user.id());
+        if (handleClosedDuplicate(user, chatId, man)) {
+            db.updateUserState(user.tgId(), UserState.NONE, null);
+            return;
+        }
         if (man != null && tgId != null && (man.tgId() == null || man.tgId().isBlank())) {
             db.updateManTelegram(man.id(), tgUsername, tgId);
             man = db.getManById(man.id());
@@ -1765,6 +1780,20 @@ public class BotService extends TelegramLongPollingBot {
         SendMessage sm = new SendMessage(String.valueOf(chatId), text);
         sm.setReplyMarkup(new InlineKeyboardMarkup(rows));
         execute(sm);
+    }
+
+    private boolean handleClosedDuplicate(User user, long chatId, Man man) throws Exception {
+        if (man == null || !man.isClosed()) {
+            return false;
+        }
+        if (user.isAdmin()) {
+            sendManCard(chatId, user, man, true);
+        } else {
+            sendTextWithMenuButton(chatId,
+                    "Карточка с такими данными уже существует, но сейчас закрыта. " +
+                            "Создать новую с тем же тегом или номером нельзя.");
+        }
+        return true;
     }
 
     private void notifyOwnerNewTag(Man man, User creator) {
