@@ -41,6 +41,13 @@ CREATE TABLE IF NOT EXISTS reviews (
     FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS man_phone_aliases (
+    phone TEXT PRIMARY KEY,
+    man_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(man_id) REFERENCES men(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS man_sheets (
     man_id INTEGER PRIMARY KEY,
     sheet_id INTEGER NOT NULL,

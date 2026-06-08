@@ -46,10 +46,22 @@ public class Db {
         ensureReviewsApproved();
         ensureReviewNotifiedColumn();
         ensureMenClosedColumn();
+        ensurePhoneAliasesTable();
         ensureNoSecretState();
         ensureSheetsTables();
         ensureNoNames();
+        ensurePhoneAliasesBackfill();
         ensureDefaultSettings();
+    }
+
+    private void ensurePhoneAliasesTable() throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("CREATE TABLE IF NOT EXISTS man_phone_aliases (" +
+                    "phone TEXT PRIMARY KEY, " +
+                    "man_id INTEGER NOT NULL, " +
+                    "created_at TEXT NOT NULL, " +
+                    "FOREIGN KEY(man_id) REFERENCES men(id) ON DELETE CASCADE)");
+        }
     }
 
     private void ensureSheetsTables() throws SQLException {
@@ -80,6 +92,17 @@ public class Db {
     private void ensureNoNames() throws SQLException {
         try (Statement st = conn.createStatement()) {
             st.execute("UPDATE men SET name='' WHERE name IS NOT NULL AND name<>''");
+        }
+    }
+
+    private void ensurePhoneAliasesBackfill() throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT id, phone FROM men WHERE phone IS NOT NULL AND trim(phone) <> ''")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    ensurePhoneAliases(rs.getInt("id"), rs.getString("phone"));
+                }
+            }
         }
     }
 
@@ -402,10 +425,19 @@ public class Db {
     }
 
     public synchronized Man findManByPhone(String phone) throws SQLException {
+        phone = normalizePhoneValue(phone);
         if (phone == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men WHERE phone=? AND is_closed=0")) {
+                "SELECT * FROM men m " +
+                        "WHERE m.is_closed=0 AND (" +
+                        "m.phone=? OR EXISTS (" +
+                        "SELECT 1 FROM man_phone_aliases a WHERE a.man_id=m.id AND a.phone=?" +
+                        ")" +
+                        ") " +
+                        "ORDER BY CASE WHEN m.phone=? THEN 0 ELSE 1 END, m.id ASC LIMIT 1")) {
             ps.setString(1, phone);
+            ps.setString(2, phone);
+            ps.setString(3, phone);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapMan(rs);
             }
@@ -414,10 +446,17 @@ public class Db {
     }
 
     public synchronized Man findManByPhoneAny(String phone) throws SQLException {
+        phone = normalizePhoneValue(phone);
         if (phone == null) return null;
         try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT * FROM men WHERE phone=?")) {
+                "SELECT * FROM men m " +
+                        "WHERE m.phone=? OR EXISTS (" +
+                        "SELECT 1 FROM man_phone_aliases a WHERE a.man_id=m.id AND a.phone=?" +
+                        ") " +
+                        "ORDER BY CASE WHEN m.phone=? THEN 0 ELSE 1 END, m.id ASC LIMIT 1")) {
             ps.setString(1, phone);
+            ps.setString(2, phone);
+            ps.setString(3, phone);
             try (ResultSet rs = ps.executeQuery()) {
                 if (rs.next()) return mapMan(rs);
             }
@@ -527,6 +566,24 @@ public class Db {
 
     public synchronized Man createMan(String phone, String tgUsername, String tgId,
                                       String name, String description, String photoFileId, Integer createdBy) throws SQLException {
+        if (phone != null) {
+            Man existing = findManByPhoneAny(phone);
+            if (existing != null) {
+                return existing;
+            }
+        }
+        if (tgUsername != null) {
+            Man existing = findManByTgUsernameAny(tgUsername);
+            if (existing != null) {
+                return existing;
+            }
+        }
+        if (tgId != null) {
+            Man existing = findManByTgIdAny(tgId);
+            if (existing != null) {
+                return existing;
+            }
+        }
         try (PreparedStatement ps = conn.prepareStatement(
                 "INSERT INTO men(phone,tg_username,tg_id,name,description,photo_file_id,is_closed,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)")) {
             ps.setString(1, phone);
@@ -554,8 +611,55 @@ public class Db {
         try (PreparedStatement ps = conn.prepareStatement(
                 "SELECT * FROM men ORDER BY id DESC LIMIT 1")) {
             try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) return mapMan(rs);
+                if (rs.next()) {
+                    Man man = mapMan(rs);
+                    ensurePhoneAliases(man.id(), man.phone());
+                    return man;
+                }
             }
+        }
+        return null;
+    }
+
+    private void ensurePhoneAliases(int manId, String phone) throws SQLException {
+        String normalized = normalizePhoneValue(phone);
+        if (normalized == null) {
+            return;
+        }
+        insertPhoneAliasIfNeeded(manId, phone, normalized);
+        insertPhoneAliasIfNeeded(manId, phone, alternatePhone(normalized));
+    }
+
+    private void insertPhoneAliasIfNeeded(int manId, String originalPhone, String alias) throws SQLException {
+        if (alias == null || alias.equals(originalPhone)) {
+            return;
+        }
+        try (PreparedStatement ps = conn.prepareStatement(
+                "INSERT OR IGNORE INTO man_phone_aliases(phone, man_id, created_at) VALUES(?,?,?)")) {
+            ps.setString(1, alias);
+            ps.setInt(2, manId);
+            ps.setString(3, TimeUtil.nowIso());
+            ps.executeUpdate();
+        }
+    }
+
+    private String normalizePhoneValue(String phone) {
+        if (phone == null) {
+            return null;
+        }
+        String digits = phone.replaceAll("\\D", "");
+        return digits.length() < 5 ? null : digits;
+    }
+
+    private String alternatePhone(String phone) {
+        if (phone == null || !phone.matches("\\d{11}")) {
+            return null;
+        }
+        if (phone.startsWith("8")) {
+            return "7" + phone.substring(1);
+        }
+        if (phone.startsWith("7")) {
+            return "8" + phone.substring(1);
         }
         return null;
     }

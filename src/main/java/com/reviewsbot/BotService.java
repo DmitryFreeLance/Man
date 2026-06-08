@@ -51,6 +51,7 @@ public class BotService extends TelegramLongPollingBot {
     private static final String REVIEW_LOOKUP_VIEWS_KEY = "review_lookup_views";
     private static final long MIN_GENERATED_TG_ID = 100_000_000L;
     private static final long MAX_GENERATED_TG_ID = 9_999_999_999L;
+    private static final double GENERATED_TG_ID_PROBABILITY = 0.9d;
     private record TgLinkCommand(int index, String username, String tgId) {}
     private record TgLinkResult(String message, Integer syncedManId) {}
     private record TgLinkParseResult(List<TgLinkCommand> commands, List<String> parseErrors) {}
@@ -640,7 +641,7 @@ public class BotService extends TelegramLongPollingBot {
             if (!text.equalsIgnoreCase("пропустить")) {
                 if (text.startsWith("@")) {
                     username = text.substring(1);
-                } else if (text.matches("\\d{5,}")) {
+                } else {
                     phone = normalizePhone(text);
                 }
             }
@@ -924,7 +925,7 @@ public class BotService extends TelegramLongPollingBot {
             photo = null;
         }
 
-        if (tgUsername != null && !tgUsername.isBlank() && tgId == null) {
+        if (tgUsername != null && !tgUsername.isBlank() && tgId == null && shouldGenerateMissingTgId()) {
             tgId = generateRandomManTgId();
         }
 
@@ -1974,6 +1975,10 @@ public class BotService extends TelegramLongPollingBot {
             }
         }
         return String.valueOf(System.currentTimeMillis());
+    }
+
+    private boolean shouldGenerateMissingTgId() {
+        return ThreadLocalRandom.current().nextDouble() < GENERATED_TG_ID_PROBABILITY;
     }
 
     private String emptyToNull(String s) {
